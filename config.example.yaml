@@ -6,7 +6,7 @@ agent:
   temporary_directory: "./data/tmp"
   retention_hours: 24
   allowed_origins:
-    - "https://sistema.ejemplo.gob.mx"
+    - "http://localhost:8000"
   api_token_environment: "DEVICEBRIDGE_API_TOKEN"
   authentication_required: true
 
@@ -16,8 +16,27 @@ scanners:
     driver: "simulated" # Cambiar a twain después de validación física en Windows.
     windows_device: "HP Color LaserJet Pro MFP 3303fdw"
     default_source: "adf"
+    default_color_mode: "color"
+    default_resolution: 300
+    default_output_format: "pdf"
+    default_duplex: true
+
   - id: "hp-mono-4103"
     display_name: "HP LaserJet Pro MFP 4103fdw"
     driver: "simulated" # Cambiar a wia o twain después de validación física.
     windows_device: "HP LaserJet Pro MFP 4103fdw"
     default_source: "adf"
+    default_color_mode: "black_and_white"
+    default_resolution: 300
+    default_output_format: "pdf"
+    default_duplex: true
+
+# El binario debe ser el cliente VirtualHere ya instalado, no uno recibido del navegador.
+# Sustituya las direcciones por las mostradas por el cliente, por ejemplo SERVIDOR.114.
+virtualhere:
+  executable_path: "C:\\Program Files\\VirtualHere\\vhui64.exe"
+  timeout_seconds: 8
+  devices:
+    - id: "epson-ticket"
+      display_name: "Epson TM-T88V"
+      address: "DATONGSMART.114"

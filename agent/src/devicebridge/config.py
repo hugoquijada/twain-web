@@ -18,6 +18,24 @@ class ScannerConfiguration:
     driver: str
     windows_device: str
     default_source: str
+    default_color_mode: str
+    default_resolution: int
+    default_output_format: str
+    default_duplex: bool
+
+
+@dataclass(frozen=True)
+class VirtualHereDeviceConfiguration:
+    identifier: str
+    display_name: str
+    address: str
+
+
+@dataclass(frozen=True)
+class VirtualHereConfiguration:
+    executable_path: Path
+    timeout_seconds: int
+    devices: tuple[VirtualHereDeviceConfiguration, ...]
 
 
 @dataclass(frozen=True)
@@ -32,6 +50,7 @@ class AgentConfiguration:
     api_token_environment: str
     authentication_required: bool
     scanners: tuple[ScannerConfiguration, ...]
+    virtualhere: VirtualHereConfiguration | None
 
 
 def load_configuration(path: Path) -> AgentConfiguration:
@@ -67,6 +86,7 @@ def load_configuration(path: Path) -> AgentConfiguration:
     identifiers = [scanner.identifier for scanner in scanners]
     if len(identifiers) != len(set(identifiers)):
         raise ConfigurationError("Los identificadores de escáner deben ser únicos.")
+    virtualhere = _load_virtualhere(raw.get("virtualhere"))
 
     return AgentConfiguration(
         installation_id=_required_string(agent, "installation_id"),
@@ -79,6 +99,7 @@ def load_configuration(path: Path) -> AgentConfiguration:
         api_token_environment=token_environment,
         authentication_required=authentication_required,
         scanners=scanners,
+        virtualhere=virtualhere,
     )
 
 
@@ -91,12 +112,57 @@ def _load_scanner(raw: object) -> ScannerConfiguration:
     source = raw.get("default_source", "flatbed")
     if source not in {"flatbed", "adf"}:
         raise ConfigurationError("scanner.default_source debe ser flatbed o adf.")
+    color_mode = raw.get("default_color_mode", "color")
+    if color_mode not in {"color", "grayscale", "black_and_white"}:
+        raise ConfigurationError("scanner.default_color_mode no es válido.")
+    resolution = raw.get("default_resolution", 300)
+    if not isinstance(resolution, int) or resolution not in {75, 100, 150, 200, 300, 600, 1200}:
+        raise ConfigurationError("scanner.default_resolution no es válido.")
+    output_format = raw.get("default_output_format", "pdf")
+    if output_format not in {"png", "jpeg", "pdf"}:
+        raise ConfigurationError("scanner.default_output_format no es válido.")
+    duplex = raw.get("default_duplex", False)
+    if not isinstance(duplex, bool):
+        raise ConfigurationError("scanner.default_duplex debe ser true o false.")
     return ScannerConfiguration(
         identifier=_required_string(raw, "id"),
         display_name=_required_string(raw, "display_name"),
         driver=driver,
         windows_device=_required_string(raw, "windows_device"),
         default_source=source,
+        default_color_mode=color_mode,
+        default_resolution=resolution,
+        default_output_format=output_format,
+        default_duplex=duplex,
+    )
+
+
+def _load_virtualhere(raw: object) -> VirtualHereConfiguration | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigurationError("virtualhere debe ser un objeto.")
+    devices = tuple(_load_virtualhere_device(item) for item in raw.get("devices", []))
+    identifiers = [device.identifier for device in devices]
+    if len(identifiers) != len(set(identifiers)):
+        raise ConfigurationError("Los identificadores de VirtualHere deben ser únicos.")
+    return VirtualHereConfiguration(
+        executable_path=Path(_required_string(raw, "executable_path")).expanduser(),
+        timeout_seconds=_positive_integer(raw, "timeout_seconds"),
+        devices=devices,
+    )
+
+
+def _load_virtualhere_device(raw: object) -> VirtualHereDeviceConfiguration:
+    if not isinstance(raw, dict):
+        raise ConfigurationError("Cada dispositivo VirtualHere debe ser un objeto.")
+    address = _required_string(raw, "address")
+    if "," in address or "\n" in address or "\r" in address:
+        raise ConfigurationError("La dirección VirtualHere contiene caracteres no permitidos.")
+    return VirtualHereDeviceConfiguration(
+        identifier=_required_string(raw, "id"),
+        display_name=_required_string(raw, "display_name"),
+        address=address,
     )
 
 

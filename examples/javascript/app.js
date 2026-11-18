@@ -1,4 +1,5 @@
-const bridgeUrl = 'http://127.0.0.1:8765/api/v1';
+import { DeviceBridgeClient } from '../../javascript-client/src/index.js';
+
 const controls = {
   token: document.querySelector('#token'),
   load: document.querySelector('#load'),
@@ -12,26 +13,13 @@ function setStatus(value) {
   controls.status.textContent = value;
 }
 
-async function request(path, options = {}) {
-  const response = await fetch(`${bridgeUrl}${path}`, {
-    ...options,
-    headers: {
-      ...(controls.token.value ? { Authorization: `Bearer ${controls.token.value}` } : {}),
-      ...options.headers
-    }
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    const error = body.detail || body;
-    throw new Error(error.message || `Error HTTP ${response.status}`);
-  }
-  return response;
+function bridge() {
+  return new DeviceBridgeClient({ token: controls.token.value });
 }
 
 controls.load.addEventListener('click', async () => {
   try {
-    const response = await request('/scanners');
-    const { items } = await response.json();
+    const { items } = await bridge().listScanners();
     controls.scanner.replaceChildren(...items.map((item) => {
       const option = document.createElement('option');
       option.value = item.id;
@@ -47,37 +35,30 @@ controls.load.addEventListener('click', async () => {
 });
 
 controls.scan.addEventListener('click', async () => {
+  controls.scan.disabled = true;
   try {
-    const response = await request('/scans', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': crypto.randomUUID()
-      },
-      body: JSON.stringify({
-        scanner_id: controls.scanner.value,
-        source: 'adf',
-        color_mode: 'color',
-        resolution: 300,
-        output_format: 'png',
-        duplex: false
-      })
+    const job = await bridge().createScan({
+      scanner_id: controls.scanner.value,
+      source: 'adf',
+      color_mode: 'color',
+      resolution: 300,
+      output_format: 'png',
+      duplex: false
     });
-    const job = await response.json();
     await waitForCompletion(job.id);
   } catch (error) {
     setStatus(`No fue posible iniciar el escaneo: ${error.message}`);
+  } finally {
+    controls.scan.disabled = false;
   }
 });
 
 async function waitForCompletion(jobId) {
   for (;;) {
-    const response = await request(`/scans/${jobId}`);
-    const job = await response.json();
+    const job = await bridge().getScan(jobId);
     setStatus(`Trabajo ${job.id}: ${job.state}`);
     if (job.state === 'COMPLETED') {
-      const file = await request(`/scans/${job.id}/file`);
-      const blob = await file.blob();
+      const blob = await bridge().downloadScan(job.id);
       controls.preview.src = URL.createObjectURL(blob);
       controls.preview.hidden = false;
       return;

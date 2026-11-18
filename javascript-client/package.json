@@ -1,0 +1,14 @@
+{
+  "name": "@devicebridge/client",
+  "version": "0.1.0",
+  "description": "Framework-independent JavaScript client for the DeviceBridge local agent",
+  "type": "module",
+  "exports": "./src/index.js",
+  "files": ["src"],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

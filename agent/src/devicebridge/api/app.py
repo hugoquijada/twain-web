@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 from pathlib import Path
 from typing import Annotated
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from devicebridge import __version__
 from devicebridge.config import AgentConfiguration
+from devicebridge.devices.connections.virtualhere import AgentConnectionRegistry, VirtualHereClient, VirtualHereError, VirtualHereState
 from devicebridge.devices.scanners.base import ScanRequest, ScannerDriver
 from devicebridge.devices.scanners.simulated import SimulatedScannerDriver, UnsupportedScanOption
 from devicebridge.devices.scanners.twain import TwainScannerDriver
@@ -24,13 +26,16 @@ from devicebridge.jobs.repository import SQLiteJobRepository
 from devicebridge.storage.files import TemporaryFileStore
 
 
+logger = logging.getLogger(__name__)
+
+
 class ScanBody(BaseModel):
     scanner_id: str = Field(min_length=1, max_length=128)
-    source: str = Field(default="adf", pattern="^(flatbed|adf)$")
-    color_mode: str = Field(default="color", pattern="^(color|grayscale|black_and_white)$")
-    resolution: int = Field(default=300, ge=75, le=1200)
-    output_format: str = Field(default="png", pattern="^(png|jpeg|pdf)$")
-    duplex: bool = False
+    source: str | None = Field(default=None, pattern="^(flatbed|adf)$")
+    color_mode: str | None = Field(default=None, pattern="^(color|grayscale|black_and_white)$")
+    resolution: int | None = Field(default=None, ge=75, le=1200)
+    output_format: str | None = Field(default=None, pattern="^(png|jpeg|pdf)$")
+    duplex: bool | None = None
 
 
 def create_app(configuration: AgentConfiguration) -> FastAPI:
@@ -41,6 +46,12 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
     repository = SQLiteJobRepository(configuration.data_directory / "jobs.sqlite3")
     file_store = TemporaryFileStore(configuration.temporary_directory)
     drivers = _create_drivers(configuration)
+    scanner_configuration = {scanner.identifier: scanner for scanner in configuration.scanners}
+    virtualhere = (VirtualHereClient(configuration.virtualhere.executable_path, configuration.virtualhere.timeout_seconds)
+                   if configuration.virtualhere else None)
+    virtualhere_devices = ({device.identifier: device for device in configuration.virtualhere.devices}
+                           if configuration.virtualhere else {})
+    agent_connections = AgentConnectionRegistry()
 
     app = FastAPI(title="DeviceBridge Agent", version=__version__, docs_url=None, redoc_url=None)
     app.add_middleware(
@@ -82,13 +93,79 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
 
     @app.get("/api/v1/scanners", dependencies=[Depends(authorize)])
     def scanners() -> dict[str, list[dict[str, object]]]:
-        return {"items": [{"id": driver.identifier, "name": driver.display_name, "capabilities": driver.capabilities().to_api()}
+        return {"items": [{"id": driver.identifier, "name": driver.display_name,
+                           "defaults": _scan_defaults(scanner_configuration[driver.identifier]),
+                           "capabilities": driver.capabilities().to_api()}
                           for driver in drivers.values()]}
 
     @app.get("/api/v1/scanners/{scanner_id}/capabilities", dependencies=[Depends(authorize)])
     def scanner_capabilities(scanner_id: str) -> dict[str, object]:
         driver = _driver_or_404(drivers, scanner_id)
         return {"scannerId": scanner_id, **driver.capabilities().to_api()}
+
+    @app.get("/api/v1/virtualhere/devices", dependencies=[Depends(authorize)])
+    def virtualhere_device_list() -> dict[str, list[dict[str, object]]]:
+        client = _virtualhere_or_503(virtualhere)
+        items = []
+        for device in virtualhere_devices.values():
+            try:
+                status = client.get_device_status(device.address)
+            except VirtualHereError as error:
+                status = {"address": device.address, "state": VirtualHereState.ERROR, "detail": str(error)}
+            else:
+                status = status.to_api()
+            items.append({"id": device.identifier, "name": device.display_name, "status": status})
+        return {"items": items}
+
+    @app.get("/api/v1/virtualhere/devices/{device_id}", dependencies=[Depends(authorize)])
+    def virtualhere_device_status(device_id: str) -> dict[str, object]:
+        client = _virtualhere_or_503(virtualhere)
+        device = _virtualhere_device_or_404(virtualhere_devices, device_id)
+        try:
+            status = client.get_device_status(device.address)
+        except VirtualHereError as error:
+            raise _http_error(503, "VIRTUALHERE_UNAVAILABLE", str(error)) from error
+        return {"id": device.identifier, "name": device.display_name, "status": status.to_api()}
+
+    @app.post("/api/v1/virtualhere/devices/{device_id}/connect", dependencies=[Depends(authorize)])
+    def virtualhere_connect(device_id: str) -> dict[str, object]:
+        client = _virtualhere_or_503(virtualhere)
+        device = _virtualhere_device_or_404(virtualhere_devices, device_id)
+        try:
+            before = client.get_device_status(device.address)
+            if before.state == VirtualHereState.IN_USE_REMOTE:
+                raise _http_error(409, "DEVICE_IN_USE_REMOTE", "El dispositivo está en uso por otro cliente.")
+            after = client.connect(device.address)
+        except VirtualHereError as error:
+            raise _http_error(503, "VIRTUALHERE_CONNECT_FAILED", str(error)) from error
+        confirmed_local = after.state == VirtualHereState.CONNECTED_LOCAL
+        if confirmed_local:
+            agent_connections.mark_connected(device.address)
+        return {
+            "id": device.identifier,
+            "name": device.display_name,
+            "status": after.to_api(),
+            "connectionAccepted": True,
+            "safeToDisconnect": confirmed_local,
+        }
+
+    @app.post("/api/v1/virtualhere/devices/{device_id}/disconnect", dependencies=[Depends(authorize)])
+    def virtualhere_disconnect(device_id: str) -> dict[str, object]:
+        client = _virtualhere_or_503(virtualhere)
+        device = _virtualhere_device_or_404(virtualhere_devices, device_id)
+        if not agent_connections.owns(device.address):
+            raise _http_error(409, "DEVICE_NOT_OWNED_BY_AGENT",
+                              "El agente no creó esta conexión durante la sesión actual; no se desconectará.")
+        try:
+            before = client.get_device_status(device.address)
+            if before.state != VirtualHereState.CONNECTED_LOCAL:
+                raise _http_error(409, "CONNECTION_STATE_UNCERTAIN",
+                                  "No se pudo confirmar que la conexión siga siendo local; no se desconectará.")
+            after = client.disconnect(device.address)
+        except VirtualHereError as error:
+            raise _http_error(503, "VIRTUALHERE_DISCONNECT_FAILED", str(error)) from error
+        agent_connections.release(device.address)
+        return {"id": device.identifier, "name": device.display_name, "status": after.to_api()}
 
     @app.post("/api/v1/scans", status_code=202, dependencies=[Depends(authorize)])
     def create_scan(body: ScanBody, background_tasks: BackgroundTasks,
@@ -101,7 +178,14 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         except ValueError as error:
             raise _http_error(409, "IDEMPOTENCY_KEY_CONFLICT", str(error)) from error
         if job.state == JobState.QUEUED:
-            request = ScanRequest(body.source, body.color_mode, body.resolution, body.output_format, body.duplex)
+            defaults = scanner_configuration[body.scanner_id]
+            request = ScanRequest(
+                body.source or defaults.default_source,
+                body.color_mode or defaults.default_color_mode,
+                body.resolution or defaults.default_resolution,
+                body.output_format or defaults.default_output_format,
+                defaults.default_duplex if body.duplex is None else body.duplex,
+            )
             background_tasks.add_task(_run_scan, repository, file_store, driver, job.identifier, request)
         return job.to_api()
 
@@ -152,6 +236,29 @@ def _driver_or_404(drivers: dict[str, ScannerDriver], scanner_id: str) -> Scanne
     return driver
 
 
+def _virtualhere_or_503(client: VirtualHereClient | None) -> VirtualHereClient:
+    if not client:
+        raise _http_error(503, "VIRTUALHERE_NOT_CONFIGURED", "VirtualHere no está configurado en este agente.")
+    return client
+
+
+def _virtualhere_device_or_404(devices, device_id: str):
+    device = devices.get(device_id)
+    if not device:
+        raise _http_error(404, "VIRTUALHERE_DEVICE_NOT_FOUND", "Dispositivo VirtualHere no configurado.")
+    return device
+
+
+def _scan_defaults(scanner) -> dict[str, object]:
+    return {
+        "source": scanner.default_source,
+        "colorMode": scanner.default_color_mode,
+        "resolution": scanner.default_resolution,
+        "outputFormat": scanner.default_output_format,
+        "duplex": scanner.default_duplex,
+    }
+
+
 def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver: ScannerDriver, job_id: str,
               request: ScanRequest) -> None:
     repository.update(job_id, JobState.PROCESSING)
@@ -167,6 +274,7 @@ def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver
     except (TwainScanError, WiaScanError) as error:
         repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message=str(error))
     except Exception:
+        logger.exception("Error inesperado al procesar el escaneo %s.", job_id)
         repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message="Error interno de escaneo.")
 
 

@@ -6,13 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "devicebridge-agent"
 version = "0.1.0"
 description = "Local Windows scanner bridge for authorized web applications"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn[standard]>=0.30,<1",
   "PyYAML>=6,<7",
+  "ruamel.yaml>=0.18,<1",
   "pywin32>=308; platform_system == 'Windows'",
   "naps2-scan>=0.1.2; platform_system == 'Windows'",
+  "Pillow>=10,<12",
+  "pystray>=0.19,<1",
 ]
 
 [project.optional-dependencies]

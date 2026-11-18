@@ -7,6 +7,8 @@ __pycache__/
 
 # DeviceBridge runtime state and secrets
 agent/config.yaml
+agent/config.yaml.candidate
+agent/config.yaml.*.bak
 agent/data/
 *.sqlite3
 
