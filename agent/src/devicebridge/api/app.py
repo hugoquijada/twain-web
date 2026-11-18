@@ -186,7 +186,9 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
                 body.output_format or defaults.default_output_format,
                 defaults.default_duplex if body.duplex is None else body.duplex,
             )
-            background_tasks.add_task(_run_scan, repository, file_store, driver, job.identifier, request)
+            background_tasks.add_task(
+                _run_scan, repository, file_store, driver, job.identifier, request, configuration.debug_errors
+            )
         return job.to_api()
 
     @app.get("/api/v1/scans/{job_id}", dependencies=[Depends(authorize)])
@@ -260,7 +262,7 @@ def _scan_defaults(scanner) -> dict[str, object]:
 
 
 def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver: ScannerDriver, job_id: str,
-              request: ScanRequest) -> None:
+              request: ScanRequest, debug_errors: bool = False) -> None:
     repository.update(job_id, JobState.PROCESSING)
     try:
         result = driver.scan(request)
@@ -275,7 +277,12 @@ def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver
         repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message=str(error))
     except Exception:
         logger.exception("Error inesperado al procesar el escaneo %s.", job_id)
-        repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message="Error interno de escaneo.")
+        message = "Error interno de escaneo."
+        if debug_errors:
+            import sys
+            error = sys.exception()
+            message = f"{type(error).__name__}: {error}"
+        repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message=message)
 
 
 def _http_error(status: int, code: str, message: str) -> HTTPException:

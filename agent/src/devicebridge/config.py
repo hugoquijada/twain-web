@@ -49,6 +49,7 @@ class AgentConfiguration:
     allowed_origins: tuple[str, ...]
     api_token_environment: str
     authentication_required: bool
+    debug_errors: bool
     scanners: tuple[ScannerConfiguration, ...]
     virtualhere: VirtualHereConfiguration | None
 
@@ -81,6 +82,9 @@ def load_configuration(path: Path) -> AgentConfiguration:
     authentication_required = agent.get("authentication_required", True)
     if not isinstance(authentication_required, bool):
         raise ConfigurationError("agent.authentication_required debe ser true o false.")
+    debug_errors = agent.get("debug_errors", False)
+    if not isinstance(debug_errors, bool):
+        raise ConfigurationError("agent.debug_errors debe ser true o false.")
 
     scanners = tuple(_load_scanner(item) for item in raw.get("scanners", []))
     identifiers = [scanner.identifier for scanner in scanners]
@@ -98,6 +102,7 @@ def load_configuration(path: Path) -> AgentConfiguration:
         allowed_origins=normalized_origins,
         api_token_environment=token_environment,
         authentication_required=authentication_required,
+        debug_errors=debug_errors,
         scanners=scanners,
         virtualhere=virtualhere,
     )

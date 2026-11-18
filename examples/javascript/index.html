@@ -24,6 +24,16 @@
     <button id="scan" disabled>Escanear</button>
     <pre id="status" aria-live="polite">Esperando conexión.</pre>
     <img id="preview" alt="Vista previa del escaneo" hidden>
+    <script>
+      window.addEventListener('error', (event) => {
+        const target = event.target;
+        const detail = event.error?.message || target?.src || event.message || 'Error desconocido.';
+        document.querySelector('#status').textContent = `No se cargó el cliente JavaScript: ${detail}`;
+      }, true);
+      window.addEventListener('unhandledrejection', (event) => {
+        document.querySelector('#status').textContent = `Error JavaScript: ${event.reason?.message || event.reason}`;
+      });
+    </script>
     <script type="module" src="app.js"></script>
   </body>
 </html>

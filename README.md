@@ -32,3 +32,14 @@ El archivo de ejemplo inicia en modo simulado para pruebas. Para un dispositivo 
 Los scripts de desarrollo establecen `PYTHONPYCACHEPREFIX` para que el bytecode se guarde bajo `.runtime/pycache/`, fuera de `src/` y `tests/`.
 
 En Windows, el arranque normal muestra el icono verde de DeviceBridge en la bandeja del sistema. Desde **Configurar escáner…** se detectan fuentes WIA/TWAIN y se pueden establecer los valores predeterminados de fuente, color, resolución, formato y dúplex. La ventana presenta y valida el cambio, crea un respaldo de `config.yaml` y pide reiniciar el agente antes de que los nuevos valores predeterminados entren en vigor.
+
+## Servir el ejemplo JavaScript
+
+El ejemplo importa la librería local `javascript-client/`, por lo que el servidor HTTP debe iniciarse desde la raíz de DeviceBridge, no desde `examples/javascript/`:
+
+```powershell
+cd C:\ruta\devicebridge
+python -m http.server 8080 --bind 127.0.0.1
+```
+
+Abra `http://127.0.0.1:8080/examples/javascript/`.

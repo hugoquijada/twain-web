@@ -23,3 +23,5 @@
 - Confirmación física del formato de respuesta `DEVICE INFO` de VirtualHere antes de habilitar desconexión automática en un flujo de impresión.
 
 Los adaptadores reales se implementarán solamente contra una computadora Windows de prueba con el controlador HP correspondiente instalado. No se debe cambiar un escáner a `wia` o `twain` en producción esperando que el marcador actual capture documentos: devuelve `SCANNER_DRIVER_UNAVAILABLE` de forma explícita.
+
+Para diagnóstico local, `agent.debug_errors: true` expone el tipo y mensaje de una excepción inesperada en el estado del trabajo. No debe habilitarse en instalaciones de producción.

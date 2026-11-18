@@ -15,7 +15,7 @@ export class DeviceBridgeClient {
     }
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.token = token;
-    this.fetch = fetchImplementation;
+    this.fetch = fetchImplementation.bind(globalThis);
   }
 
   health() {
