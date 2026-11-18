@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DeviceBridge: ejemplo de escaneo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 44rem; }
+      label, select, input, button { display: block; margin: .75rem 0; }
+      pre { background: #f4f4f4; padding: 1rem; overflow: auto; }
+      img { display: block; margin-top: 1rem; max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <h1>DeviceBridge: prueba de escaneo</h1>
+    <p>Este ejemplo debe servirse desde un origen incluido en <code>allowed_origins</code>; no funciona desde <code>file://</code>.</p>
+    <label>Token de vinculación
+      <input id="token" type="password" autocomplete="off">
+    </label>
+    <button id="load">Detectar escáneres</button>
+    <label>Escáner
+      <select id="scanner" disabled></select>
+    </label>
+    <button id="scan" disabled>Escanear</button>
+    <pre id="status" aria-live="polite">Esperando conexión.</pre>
+    <img id="preview" alt="Vista previa del escaneo" hidden>
+    <script src="app.js"></script>
+  </body>
+</html>

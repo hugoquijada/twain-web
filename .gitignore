@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.runtime/
+
+# DeviceBridge runtime state and secrets
+agent/config.yaml
+agent/data/
+*.sqlite3
+
+# JavaScript tooling
+node_modules/
