@@ -23,3 +23,23 @@ agent:
 
             with self.assertRaises(ConfigurationError):
                 load_configuration(path)
+
+    def test_authentication_can_be_disabled_for_local_development(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "config.yaml"
+            path.write_text("""
+agent:
+  installation_id: test
+  host: 127.0.0.1
+  port: 8765
+  data_directory: ./data
+  temporary_directory: ./tmp
+  retention_hours: 24
+  allowed_origins: [http://localhost:8000]
+  api_token_environment: DEVICEBRIDGE_API_TOKEN
+  authentication_required: false
+""", encoding="utf-8")
+
+            configuration = load_configuration(path)
+
+            self.assertFalse(configuration.authentication_required)

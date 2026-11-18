@@ -30,6 +30,7 @@ class AgentConfiguration:
     retention_hours: int
     allowed_origins: tuple[str, ...]
     api_token_environment: str
+    authentication_required: bool
     scanners: tuple[ScannerConfiguration, ...]
 
 
@@ -58,6 +59,10 @@ def load_configuration(path: Path) -> AgentConfiguration:
     if not isinstance(token_environment, str) or not token_environment.isidentifier():
         raise ConfigurationError("agent.api_token_environment debe ser un nombre de variable de entorno.")
 
+    authentication_required = agent.get("authentication_required", True)
+    if not isinstance(authentication_required, bool):
+        raise ConfigurationError("agent.authentication_required debe ser true o false.")
+
     scanners = tuple(_load_scanner(item) for item in raw.get("scanners", []))
     identifiers = [scanner.identifier for scanner in scanners]
     if len(identifiers) != len(set(identifiers)):
@@ -72,6 +77,7 @@ def load_configuration(path: Path) -> AgentConfiguration:
         retention_hours=_positive_integer(agent, "retention_hours"),
         allowed_origins=normalized_origins,
         api_token_environment=token_environment,
+        authentication_required=authentication_required,
         scanners=scanners,
     )
 

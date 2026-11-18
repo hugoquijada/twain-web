@@ -3,5 +3,5 @@ $projectDirectory = Split-Path -Parent $agentDirectory
 $env:PYTHONPYCACHEPREFIX = Join-Path $projectDirectory ".runtime\pycache"
 New-Item -ItemType Directory -Force -Path $env:PYTHONPYCACHEPREFIX | Out-Null
 
-& python -m pytest tests
+& python -B -m pytest tests
 exit $LASTEXITCODE

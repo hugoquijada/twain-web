@@ -16,7 +16,7 @@ async function request(path, options = {}) {
   const response = await fetch(`${bridgeUrl}${path}`, {
     ...options,
     headers: {
-      Authorization: `Bearer ${controls.token.value}`,
+      ...(controls.token.value ? { Authorization: `Bearer ${controls.token.value}` } : {}),
       ...options.headers
     }
   });

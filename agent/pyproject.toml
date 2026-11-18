@@ -11,6 +11,8 @@ dependencies = [
   "fastapi>=0.115,<1",
   "uvicorn[standard]>=0.30,<1",
   "PyYAML>=6,<7",
+  "pywin32>=308; platform_system == 'Windows'",
+  "naps2-scan>=0.1.2; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]

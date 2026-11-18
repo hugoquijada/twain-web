@@ -6,4 +6,4 @@ project_directory=$(CDPATH= cd -- "$agent_directory/.." && pwd)
 export PYTHONPYCACHEPREFIX="$project_directory/.runtime/pycache"
 mkdir -p "$PYTHONPYCACHEPREFIX"
 
-exec python3 -m devicebridge --config "${1:-config.yaml}"
+exec python3 -B -m devicebridge.main --config "${1:-config.yaml}"

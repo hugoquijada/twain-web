@@ -1,0 +1,2 @@
+[console_scripts]
+devicebridge = devicebridge.main:main

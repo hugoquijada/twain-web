@@ -14,7 +14,11 @@ from devicebridge import __version__
 from devicebridge.config import AgentConfiguration
 from devicebridge.devices.scanners.base import ScanRequest, ScannerDriver
 from devicebridge.devices.scanners.simulated import SimulatedScannerDriver, UnsupportedScanOption
+from devicebridge.devices.scanners.twain import TwainScannerDriver
+from devicebridge.devices.scanners.twain import TwainScanError
 from devicebridge.devices.scanners.unavailable import ScannerDriverUnavailable, UnavailableScannerDriver
+from devicebridge.devices.scanners.wia import WiaScannerDriver
+from devicebridge.devices.scanners.wia import WiaScanError
 from devicebridge.jobs.models import JobState
 from devicebridge.jobs.repository import SQLiteJobRepository
 from devicebridge.storage.files import TemporaryFileStore
@@ -31,7 +35,7 @@ class ScanBody(BaseModel):
 
 def create_app(configuration: AgentConfiguration) -> FastAPI:
     token = os.environ.get(configuration.api_token_environment)
-    if not token:
+    if configuration.authentication_required and not token:
         raise RuntimeError(f"Falta la variable de entorno {configuration.api_token_environment}.")
 
     repository = SQLiteJobRepository(configuration.data_directory / "jobs.sqlite3")
@@ -58,6 +62,8 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         return await call_next(request)
 
     def authorize(authorization: Annotated[str | None, Header()] = None) -> None:
+        if not configuration.authentication_required:
+            return
         if not authorization or not authorization.startswith("Bearer "):
             raise _http_error(401, "AUTHORIZATION_REQUIRED", "Se requiere un token de autorización.")
         candidate = authorization.removeprefix("Bearer ")
@@ -126,6 +132,14 @@ def _create_drivers(configuration: AgentConfiguration) -> dict[str, ScannerDrive
     for scanner in configuration.scanners:
         if scanner.driver == "simulated":
             drivers[scanner.identifier] = SimulatedScannerDriver(scanner.identifier, scanner.display_name)
+        elif scanner.driver == "wia":
+            drivers[scanner.identifier] = WiaScannerDriver(
+                scanner.identifier, scanner.display_name, scanner.windows_device, scanner.default_source
+            )
+        elif scanner.driver == "twain":
+            drivers[scanner.identifier] = TwainScannerDriver(
+                scanner.identifier, scanner.display_name, scanner.windows_device, scanner.default_source
+            )
         else:
             drivers[scanner.identifier] = UnavailableScannerDriver(scanner.identifier, scanner.display_name, scanner.driver)
     return drivers
@@ -149,7 +163,9 @@ def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver
         repository.update(job_id, JobState.FAILED, error_code=str(error), error_message="Opción no compatible.")
     except ScannerDriverUnavailable as error:
         repository.update(job_id, JobState.FAILED, error_code="SCANNER_DRIVER_UNAVAILABLE",
-                          error_message=f"El adaptador {error} no está implementado o validado.")
+                          error_message=f"No se pudo usar el escáner: {error}.")
+    except (TwainScanError, WiaScanError) as error:
+        repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message=str(error))
     except Exception:
         repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message="Error interno de escaneo.")
 

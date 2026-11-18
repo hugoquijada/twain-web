@@ -7,5 +7,5 @@ $projectDirectory = Split-Path -Parent $agentDirectory
 $env:PYTHONPYCACHEPREFIX = Join-Path $projectDirectory ".runtime\pycache"
 New-Item -ItemType Directory -Force -Path $env:PYTHONPYCACHEPREFIX | Out-Null
 
-& python -m devicebridge --config $Config
+& python -B -m devicebridge.main --config $Config
 exit $LASTEXITCODE
