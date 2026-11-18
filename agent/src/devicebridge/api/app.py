@@ -15,6 +15,7 @@ from devicebridge import __version__
 from devicebridge.config import AgentConfiguration
 from devicebridge.devices.connections.virtualhere import AgentConnectionRegistry, VirtualHereClient, VirtualHereError, VirtualHereState
 from devicebridge.devices.scanners.base import ScanRequest, ScannerDriver
+from devicebridge.devices.scanners.discovery import discover_scanners
 from devicebridge.devices.scanners.simulated import SimulatedScannerDriver, UnsupportedScanOption
 from devicebridge.devices.scanners.twain import TwainScannerDriver
 from devicebridge.devices.scanners.twain import TwainScanError
@@ -97,6 +98,26 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
                            "defaults": _scan_defaults(scanner_configuration[driver.identifier]),
                            "capabilities": driver.capabilities().to_api()}
                           for driver in drivers.values()]}
+
+    @app.get("/api/v1/scanners/detected", dependencies=[Depends(authorize)])
+    def detected_scanners() -> dict[str, object]:
+        detected, diagnostics = discover_scanners()
+        configured = []
+        for scanner in configuration.scanners:
+            matches = [device for device in detected if _matches_configured_scanner(scanner, device)]
+            configured.append({
+                "id": scanner.identifier,
+                "driver": scanner.driver,
+                "detected": bool(matches),
+                "matches": [{"technology": device.technology, "name": device.name, "id": device.identifier}
+                            for device in matches],
+            })
+        return {
+            "devices": [{"technology": device.technology, "name": device.name, "id": device.identifier}
+                        for device in detected],
+            "configured": configured,
+            "diagnostics": diagnostics,
+        }
 
     @app.get("/api/v1/scanners/{scanner_id}/capabilities", dependencies=[Depends(authorize)])
     def scanner_capabilities(scanner_id: str) -> dict[str, object]:
@@ -259,6 +280,13 @@ def _scan_defaults(scanner) -> dict[str, object]:
         "outputFormat": scanner.default_output_format,
         "duplex": scanner.default_duplex,
     }
+
+
+def _matches_configured_scanner(scanner, device) -> bool:
+    if scanner.driver not in {"wia", "twain"} or device.technology.casefold() != scanner.driver:
+        return False
+    expected = scanner.windows_device.casefold()
+    return expected in device.name.casefold() or expected == device.identifier.casefold()
 
 
 def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver: ScannerDriver, job_id: str,

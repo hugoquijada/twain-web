@@ -32,3 +32,16 @@ test('converts the agent error contract into DeviceBridgeError', async () => {
     return true;
   });
 });
+
+test('requests actual scanner detection separately from configured scanners', async () => {
+  let requestedUrl;
+  const client = new DeviceBridgeClient({
+    fetchImplementation: async (url) => {
+      requestedUrl = url;
+      return Response.json({ devices: [], configured: [], diagnostics: [] });
+    }
+  });
+
+  await client.detectScanners();
+  assert.match(requestedUrl, /\/scanners\/detected$/);
+});

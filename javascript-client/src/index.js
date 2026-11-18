@@ -30,6 +30,10 @@ export class DeviceBridgeClient {
     return this.#json('/scanners');
   }
 
+  detectScanners() {
+    return this.#json('/scanners/detected');
+  }
+
   getScannerCapabilities(scannerId) {
     return this.#json(`/scanners/${encodeURIComponent(scannerId)}/capabilities`);
   }

@@ -19,16 +19,24 @@ function bridge() {
 
 controls.load.addEventListener('click', async () => {
   try {
-    const { items } = await bridge().listScanners();
-    controls.scanner.replaceChildren(...items.map((item) => {
+    const [{ items }, detection] = await Promise.all([
+      bridge().listScanners(),
+      bridge().detectScanners()
+    ]);
+    const detectedById = new Map(detection.configured.map((item) => [item.id, item]));
+    const available = items.filter((item) => detectedById.get(item.id)?.detected);
+    controls.scanner.replaceChildren(...available.map((item) => {
       const option = document.createElement('option');
       option.value = item.id;
       option.textContent = item.name;
       return option;
     }));
-    controls.scanner.disabled = items.length === 0;
-    controls.scan.disabled = items.length === 0;
-    setStatus(`${items.length} escáner(es) configurado(s).`);
+    controls.scanner.disabled = available.length === 0;
+    controls.scan.disabled = available.length === 0;
+    const unavailable = items.filter((item) => !detectedById.get(item.id)?.detected);
+    const diagnostics = detection.diagnostics.length ? ` ${detection.diagnostics.join(' | ')}` : '';
+    setStatus(`${available.length} escáner(es) detectado(s).` +
+      (unavailable.length ? ` No disponibles: ${unavailable.map((item) => item.name).join(', ')}.` : '') + diagnostics);
   } catch (error) {
     setStatus(`No fue posible detectar el agente: ${error.message}`);
   }
