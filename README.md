@@ -17,6 +17,8 @@ La primera entrega contiene la infraestructura de trabajos, SQLite, autorizació
 
 Use Python 3.11 a 3.14. Python 3.15 todavía puede provocar instalaciones desde código fuente de dependencias como PyYAML, en lugar de usar ruedas compatibles.
 
+En Windows, las integraciones TWAIN de `naps2-scan` requieren **.NET Runtime 8 x64 o superior**. No es necesario instalar el SDK de .NET para ejecutar el agente.
+
 En Windows, desde `agent/`:
 
 ```powershell
@@ -31,7 +33,9 @@ El archivo de ejemplo inicia en modo simulado para pruebas. Para un dispositivo 
 
 Los scripts de desarrollo establecen `PYTHONPYCACHEPREFIX` para que el bytecode se guarde bajo `.runtime/pycache/`, fuera de `src/` y `tests/`.
 
-En Windows, el arranque normal muestra el icono verde de DeviceBridge en la bandeja del sistema. Desde **Configurar escáner…** se detectan fuentes WIA/TWAIN y se pueden establecer los valores predeterminados de fuente, color, resolución, formato y dúplex. La ventana presenta y valida el cambio, crea un respaldo de `config.yaml` y pide reiniciar el agente antes de que los nuevos valores predeterminados entren en vigor.
+En Windows, el arranque normal muestra el icono verde de DeviceBridge en la bandeja del sistema. Desde **Configurar escáner…** se detectan fuentes WIA/TWAIN y se pueden establecer los valores predeterminados de fuente, color, resolución, formato y dúplex.
+
+Los perfiles de escáner ya no se administran en `config.yaml`: se guardan en `devicebridge.sqlite3` dentro del directorio de datos del agente. El icono de la bandeja abre el portal local, donde se detecta una fuente TWAIN/WIA y se crea el perfil. El enlace incluye una sesión administrativa temporal y solo funciona en `127.0.0.1`.
 
 ## Servir el ejemplo JavaScript
 

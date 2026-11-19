@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import threading
 import time
+import webbrowser
 from pathlib import Path
 
 
-def run_tray(server, config_path: Path) -> None:
+def run_tray(server, admin_url: str) -> None:
     """Show runtime state and open the local configuration window on Windows."""
     try:
         import pystray
         from PIL import Image, ImageDraw
     except ImportError as error:
         raise RuntimeError("Faltan las dependencias de bandeja: pystray y Pillow.") from error
-
-    from devicebridge.admin.window import open_configuration_window
 
     image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -22,7 +21,7 @@ def run_tray(server, config_path: Path) -> None:
     draw.rectangle((18, 28, 46, 36), fill=(255, 255, 255, 255))
 
     def configure(icon, item) -> None:
-        open_configuration_window(config_path)
+        webbrowser.open(admin_url)
 
     def exit_agent(icon, item) -> None:
         server.should_exit = True
@@ -38,7 +37,7 @@ def run_tray(server, config_path: Path) -> None:
     icon.run()
 
 
-def start_server_with_tray(uvicorn, application, host: str, port: int, config_path: Path) -> None:
+def start_server_with_tray(uvicorn, application, host: str, port: int, admin_url: str) -> None:
     config = uvicorn.Config(application, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="devicebridge-http", daemon=True)
@@ -52,4 +51,4 @@ def start_server_with_tray(uvicorn, application, host: str, port: int, config_pa
     if not server.started:
         server.should_exit = True
         raise RuntimeError("El agente HTTP no inició dentro del tiempo esperado.")
-    run_tray(server, config_path)
+    run_tray(server, admin_url)

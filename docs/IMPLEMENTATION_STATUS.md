@@ -11,6 +11,7 @@
 - Valores predeterminados por escáner: fuente, color, resolución, formato y dúplex.
 - Bandeja del sistema Windows con indicador de agente activo y acceso a configuración local.
 - Configuración nativa que detecta fuentes TWAIN/WIA y usa vista previa, validación, confirmación y respaldo antes de escribir `config.yaml`.
+- Portal local de administración para detectar y guardar perfiles de escáner en SQLite; una sección YAML existente se importa solo al crear una base vacía.
 - API de VirtualHere limitada a dispositivos configurados: consulta de estado, conexión y desconexión conservadora.
 
 ## Pendiente y no certificado

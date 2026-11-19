@@ -19,7 +19,7 @@ def main() -> None:
     configuration = load_configuration(arguments.config)
     application = create_app(configuration)
     if platform.system() == "Windows" and not arguments.no_tray:
-        start_server_with_tray(uvicorn, application, configuration.host, configuration.port, arguments.config)
+        start_server_with_tray(uvicorn, application, configuration.host, configuration.port, application.state.admin_url)
     else:
         uvicorn.run(application, host=configuration.host, port=configuration.port, log_level="info")
 
