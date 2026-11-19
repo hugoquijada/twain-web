@@ -64,7 +64,8 @@ class TwainScannerDriver:
         except (ScannerDriverUnavailable, UnsupportedScanOption):
             raise
         except Exception as error:
-            raise TwainScanError(str(error) or "TWAIN no pudo completar el escaneo.") from error
+            logger.exception("Falló el escaneo TWAIN para %s", self.windows_device)
+            raise TwainScanError(_user_message(error)) from error
 
     def _capture_pages(self, Driver, Scanner, list_devices, ColorMode, PaperSource, request: ScanRequest):
         for attempt in range(1, _INITIALIZATION_ATTEMPTS + 1):
@@ -82,9 +83,17 @@ class TwainScannerDriver:
                     PaperSource.FEEDER if request.source == "adf" else PaperSource.FLATBED
                 )
                 with Scanner(device) as scanner:
-                    return list(scanner.scan(
-                        dpi=request.resolution, color_mode=color_mode, paper_source=paper_source, use_native_ui=False
-                    ))
+                    pages = scanner.scan(
+                        dpi=request.resolution,
+                        color_mode=color_mode,
+                        paper_source=paper_source,
+                        # Some Brother TWAIN sources refuse to initialize silently.
+                        # The native UI also makes their device-specific ADF settings
+                        # available while the physical integration is being validated.
+                        use_native_ui=True,
+                    )
+                    first_page = next(pages, None)
+                    return [] if first_page is None else [first_page]
             except ScannerDriverUnavailable:
                 raise
             except Exception as error:
@@ -101,11 +110,20 @@ class TwainScanError(RuntimeError):
 
 def _is_initialization_error(error: Exception) -> bool:
     message = str(error).casefold()
-    return any(term in message for term in ("initialize", "initialise", "inicializar", "initialization", "inicialización"))
+    return any(term in message for term in (
+        "initialize", "initialise", "inicializar", "initialization", "inicialización", "bummer",
+    ))
 
 
 def _pause_before_retry(attempt: int) -> None:
     time.sleep(0.5 * attempt)
+
+
+def _user_message(error: Exception) -> str:
+    message = str(error).strip()
+    if "bummer" in message.casefold():
+        return "El controlador TWAIN no pudo inicializarse. Cierre cualquier ventana de Brother y vuelva a intentar."
+    return message.splitlines()[0] if message else "TWAIN no pudo completar el escaneo."
 
 
 def _matches(device, configured_name: str) -> bool:

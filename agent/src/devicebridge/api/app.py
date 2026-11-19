@@ -3,16 +3,18 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from devicebridge import __version__
-from devicebridge.config import AgentConfiguration
+from devicebridge.config import AgentConfiguration, ScannerConfiguration
 from devicebridge.devices.connections.virtualhere import AgentConnectionRegistry, VirtualHereClient, VirtualHereError, VirtualHereState
 from devicebridge.devices.scanners.base import ScanRequest, ScannerDriver
 from devicebridge.devices.scanners.discovery import discover_scanners
@@ -49,7 +51,7 @@ class AdminScannerProfileBody(BaseModel):
     default_source: str = Field(default="flatbed", pattern="^(flatbed|adf)$")
     default_color_mode: str = Field(default="color", pattern="^(color|grayscale|black_and_white)$")
     default_resolution: int = Field(default=300, ge=75, le=1200)
-    default_output_format: str = Field(default="pdf", pattern="^(png|jpeg|pdf)$")
+    default_output_format: str = Field(default="jpeg", pattern="^(png|jpeg|pdf)$")
     default_duplex: bool = False
 
 
@@ -69,14 +71,28 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
                            if configuration.virtualhere else {})
     agent_connections = AgentConnectionRegistry()
 
-    app = FastAPI(title="DeviceBridge Agent", version=__version__, docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Puente Escáner API",
+        version=__version__,
+        description="API local para que una aplicación web autorizada use perfiles de escáner de Windows.",
+        docs_url=None,
+        redoc_url=None,
+        openapi_tags=[
+            {"name": "Escáner · 1. Detectar", "description": "Comprueba los perfiles y fuentes disponibles."},
+            {"name": "Escáner · 2. Consultar", "description": "Consulta capacidades antes de solicitar una captura."},
+            {"name": "Escáner · 3. Iniciar", "description": "Crea un trabajo de escaneo."},
+            {"name": "Escáner · 4. Seguimiento", "description": "Consulta el estado hasta completarse o fallar."},
+            {"name": "Escáner · 5. Archivo", "description": "Descarga el resultado del trabajo terminado."},
+            {"name": "VirtualHere", "description": "Administra dispositivos USB configurados para VirtualHere."},
+        ],
+    )
     app.state.admin_token = scanner_profiles.admin_token()
     app.state.admin_url = f"http://127.0.0.1:{configuration.port}/admin#token={app.state.admin_token}"
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(configuration.allowed_origins),
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
     )
 
@@ -87,10 +103,11 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
             return _error(400, "HOST_NOT_ALLOWED", "Host no autorizado.")
         origin = request.headers.get("origin")
         admin_request = request.url.path.startswith("/admin")
+        documentation_request = request.url.path in {"/docs", "/openapi.json"}
         local_admin_origin = f"http://127.0.0.1:{configuration.port}"
-        if admin_request and origin and origin != local_admin_origin:
+        if (admin_request or documentation_request) and origin and origin != local_admin_origin:
             return _error(403, "ORIGIN_NOT_ALLOWED", "Origen administrativo no autorizado.")
-        if not admin_request and request.method != "OPTIONS" and origin not in configuration.allowed_origins:
+        if not admin_request and not documentation_request and request.method != "OPTIONS" and origin not in configuration.allowed_origins:
             return _error(403, "ORIGIN_NOT_ALLOWED", "Origen no autorizado.")
         return await call_next(request)
 
@@ -111,7 +128,11 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
 
     @app.get("/admin", response_class=HTMLResponse)
     def admin_page() -> str:
-        return _ADMIN_PAGE
+        return _ADMIN_PAGE.replace("__APP_VERSION__", __version__)
+
+    @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
+    def api_documentation() -> str:
+        return _SCALAR_PAGE
 
     @app.get("/admin/api/scanners", dependencies=[Depends(authorize_admin)])
     def admin_scanners() -> dict[str, object]:
@@ -133,6 +154,36 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         scanner_registry.refresh()
         return _profile_to_api(profile)
 
+    @app.delete("/admin/api/scanners/{scanner_id}", status_code=204, dependencies=[Depends(authorize_admin)])
+    def delete_admin_scanner(scanner_id: str) -> None:
+        if not scanner_profiles.delete(scanner_id):
+            raise _http_error(404, "SCANNER_PROFILE_NOT_FOUND", "Perfil no encontrado.")
+        scanner_registry.refresh()
+
+    @app.post("/admin/api/scanners/{scanner_id}/test", status_code=202, dependencies=[Depends(authorize_admin)])
+    def test_admin_scanner(scanner_id: str, background_tasks: BackgroundTasks) -> dict[str, object]:
+        scanner_configuration, drivers = scanner_registry.snapshot()
+        driver = _driver_or_404(drivers, scanner_id)
+        profile = scanner_configuration[scanner_id]
+        job = repository.create_or_get("scan", scanner_id, f"admin-test-{uuid.uuid4()}")
+        request = ScanRequest(profile.default_source, profile.default_color_mode, profile.default_resolution,
+                              profile.default_output_format, profile.default_duplex)
+        background_tasks.add_task(
+            _run_scan, repository, file_store, driver, job.identifier, request, configuration.debug_errors
+        )
+        return job.to_api()
+
+    @app.get("/admin/api/scans/{job_id}", dependencies=[Depends(authorize_admin)])
+    def admin_scan_status(job_id: str) -> dict[str, object]:
+        job = repository.get(job_id)
+        if not job or job.job_type != "scan":
+            raise _http_error(404, "JOB_NOT_FOUND", "Prueba no encontrada.")
+        return job.to_api()
+
+    @app.get("/admin/api/scans/{job_id}/file", dependencies=[Depends(authorize_admin)])
+    def admin_scan_file(job_id: str) -> FileResponse:
+        return _scan_file_response(repository, job_id)
+
     @app.get("/api/v1/health", dependencies=[Depends(authorize)])
     def health() -> dict[str, str]:
         return {"status": "ok", "installationId": configuration.installation_id}
@@ -141,7 +192,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
     def version() -> dict[str, str]:
         return {"version": __version__}
 
-    @app.get("/api/v1/scanners", dependencies=[Depends(authorize)])
+    @app.get("/api/v1/scanners", dependencies=[Depends(authorize)], tags=["Escáner · 1. Detectar"])
     def scanners() -> dict[str, list[dict[str, object]]]:
         scanner_configuration, drivers = scanner_registry.snapshot()
         return {"items": [{"id": driver.identifier, "name": driver.display_name,
@@ -149,7 +200,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
                            "capabilities": driver.capabilities().to_api()}
                           for driver in drivers.values()]}
 
-    @app.get("/api/v1/scanners/detected", dependencies=[Depends(authorize)])
+    @app.get("/api/v1/scanners/detected", dependencies=[Depends(authorize)], tags=["Escáner · 1. Detectar"])
     def detected_scanners() -> dict[str, object]:
         detected, diagnostics = discover_scanners()
         scanner_configuration, _ = scanner_registry.snapshot()
@@ -170,13 +221,13 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
             "diagnostics": diagnostics,
         }
 
-    @app.get("/api/v1/scanners/{scanner_id}/capabilities", dependencies=[Depends(authorize)])
+    @app.get("/api/v1/scanners/{scanner_id}/capabilities", dependencies=[Depends(authorize)], tags=["Escáner · 2. Consultar"])
     def scanner_capabilities(scanner_id: str) -> dict[str, object]:
         _, drivers = scanner_registry.snapshot()
         driver = _driver_or_404(drivers, scanner_id)
         return {"scannerId": scanner_id, **driver.capabilities().to_api()}
 
-    @app.get("/api/v1/virtualhere/devices", dependencies=[Depends(authorize)])
+    @app.get("/api/v1/virtualhere/devices", dependencies=[Depends(authorize)], tags=["VirtualHere"])
     def virtualhere_device_list() -> dict[str, list[dict[str, object]]]:
         client = _virtualhere_or_503(virtualhere)
         items = []
@@ -190,7 +241,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
             items.append({"id": device.identifier, "name": device.display_name, "status": status})
         return {"items": items}
 
-    @app.get("/api/v1/virtualhere/devices/{device_id}", dependencies=[Depends(authorize)])
+    @app.get("/api/v1/virtualhere/devices/{device_id}", dependencies=[Depends(authorize)], tags=["VirtualHere"])
     def virtualhere_device_status(device_id: str) -> dict[str, object]:
         client = _virtualhere_or_503(virtualhere)
         device = _virtualhere_device_or_404(virtualhere_devices, device_id)
@@ -200,7 +251,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
             raise _http_error(503, "VIRTUALHERE_UNAVAILABLE", str(error)) from error
         return {"id": device.identifier, "name": device.display_name, "status": status.to_api()}
 
-    @app.post("/api/v1/virtualhere/devices/{device_id}/connect", dependencies=[Depends(authorize)])
+    @app.post("/api/v1/virtualhere/devices/{device_id}/connect", dependencies=[Depends(authorize)], tags=["VirtualHere"])
     def virtualhere_connect(device_id: str) -> dict[str, object]:
         client = _virtualhere_or_503(virtualhere)
         device = _virtualhere_device_or_404(virtualhere_devices, device_id)
@@ -222,7 +273,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
             "safeToDisconnect": confirmed_local,
         }
 
-    @app.post("/api/v1/virtualhere/devices/{device_id}/disconnect", dependencies=[Depends(authorize)])
+    @app.post("/api/v1/virtualhere/devices/{device_id}/disconnect", dependencies=[Depends(authorize)], tags=["VirtualHere"])
     def virtualhere_disconnect(device_id: str) -> dict[str, object]:
         client = _virtualhere_or_503(virtualhere)
         device = _virtualhere_device_or_404(virtualhere_devices, device_id)
@@ -240,7 +291,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         agent_connections.release(device.address)
         return {"id": device.identifier, "name": device.display_name, "status": after.to_api()}
 
-    @app.post("/api/v1/scans", status_code=202, dependencies=[Depends(authorize)])
+    @app.post("/api/v1/scans", status_code=202, dependencies=[Depends(authorize)], tags=["Escáner · 3. Iniciar"])
     def create_scan(body: ScanBody, background_tasks: BackgroundTasks,
                     idempotency_key: Annotated[str | None, Header()] = None) -> dict[str, object]:
         if not idempotency_key or len(idempotency_key) > 128:
@@ -265,26 +316,58 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
             )
         return job.to_api()
 
-    @app.get("/api/v1/scans/{job_id}", dependencies=[Depends(authorize)])
+    @app.get("/api/v1/scans/{job_id}", dependencies=[Depends(authorize)], tags=["Escáner · 4. Seguimiento"])
     def scan_status(job_id: str) -> dict[str, object]:
         job = repository.get(job_id)
         if not job or job.job_type != "scan":
             raise _http_error(404, "JOB_NOT_FOUND", "Trabajo no encontrado.")
         return job.to_api()
 
-    @app.get("/api/v1/scans/{job_id}/file", dependencies=[Depends(authorize)])
+    @app.get("/api/v1/scans/{job_id}/file", dependencies=[Depends(authorize)], tags=["Escáner · 5. Archivo"])
     def scan_file(job_id: str) -> FileResponse:
-        job = repository.get(job_id)
-        if not job or job.job_type != "scan":
-            raise _http_error(404, "JOB_NOT_FOUND", "Trabajo no encontrado.")
-        if job.state != JobState.COMPLETED or not job.file_path:
-            raise _http_error(409, "FILE_NOT_READY", "El archivo aún no está disponible.")
-        path = Path(job.file_path)
-        if not path.is_file():
-            raise _http_error(410, "FILE_EXPIRED", "El archivo temporal ya no está disponible.")
-        return FileResponse(path, media_type=job.file_media_type, filename=path.name)
+        return _scan_file_response(repository, job_id)
 
+    def custom_openapi() -> dict[str, object]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+            tags=app.openapi_tags,
+        )
+        schema["paths"] = {
+            path: methods for path, methods in schema.get("paths", {}).items()
+            if path.startswith("/api/v1/scanners")
+            or path.startswith("/api/v1/scans")
+            or path.startswith("/api/v1/virtualhere")
+        }
+        components = schema.setdefault("components", {})
+        components["securitySchemes"] = {
+            "BearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "token"},
+        }
+        for path, methods in schema.get("paths", {}).items():
+            for operation in methods.values():
+                if isinstance(operation, dict):
+                    operation.setdefault("security", [{"BearerAuth": []}])
+        app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = custom_openapi
     return app
+
+
+def _scan_file_response(repository: SQLiteJobRepository, job_id: str) -> FileResponse:
+    job = repository.get(job_id)
+    if not job or job.job_type != "scan":
+        raise _http_error(404, "JOB_NOT_FOUND", "Trabajo no encontrado.")
+    if job.state != JobState.COMPLETED or not job.file_path:
+        raise _http_error(409, "FILE_NOT_READY", "El archivo aún no está disponible.")
+    path = Path(job.file_path)
+    if not path.is_file():
+        raise _http_error(410, "FILE_EXPIRED", "El archivo temporal ya no está disponible.")
+    return FileResponse(path, media_type=job.file_media_type, filename=path.name)
 
 
 def _create_drivers(configuration: AgentConfiguration) -> dict[str, ScannerDriver]:
@@ -349,24 +432,26 @@ def _profile_to_api(profile: ScannerConfiguration) -> dict[str, object]:
     }
 
 
-_ADMIN_PAGE = """<!doctype html><html lang='es'><meta charset='utf-8'><title>DeviceBridge</title>
-<style>body{font-family:system-ui;margin:2rem;max-width:52rem}button,input,select{margin:.3rem;padding:.4rem}li{margin:.5rem 0}pre{background:#f4f4f4;padding:1rem;white-space:pre-wrap}</style>
-<h1>DeviceBridge · Escáneres</h1><p>Detecta una fuente y guárdala como perfil local del agente.</p>
-<h2>Detectados</h2><ul id='detected'></ul><h2>Perfil</h2>
-<form id='profile'><input name='id' placeholder='id lógico' required><input name='display_name' placeholder='Nombre' required>
-<select name='driver'><option value='twain'>TWAIN</option><option value='wia'>WIA</option></select>
-<input name='windows_device' placeholder='Fuente Windows' required><select name='default_source'><option value='flatbed'>Cristal</option><option value='adf'>Bandeja</option></select>
-<select name='default_color_mode'><option value='color'>Color</option><option value='grayscale'>Grises</option><option value='black_and_white'>Blanco y negro</option></select>
-<select name='default_resolution'><option>150</option><option>200</option><option selected>300</option><option>600</option></select>
-<select name='default_output_format'><option selected>pdf</option><option>png</option><option>jpeg</option></select><label><input type='checkbox' name='default_duplex'> Dúplex</label><button>Guardar perfil</button></form>
-<h2>Perfiles guardados</h2><ul id='profiles'></ul><pre id='status'></pre>
+_ADMIN_PAGE = """<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Puente Escáner · Administración</title><script src='https://cdn.tailwindcss.com'></script><style>body{background:#f4efe6!important;color:#20313a!important}.bg-slate-950{background-color:#f4efe6!important}.text-slate-100{color:#20313a!important}[class~='bg-slate-900/70'],[class~='bg-slate-950/60']{background-color:#fffdf8!important}.border-slate-800{border-color:#d9d0c4!important}.bg-slate-800{background-color:#315d6c!important;color:#fff!important}.bg-slate-800:hover{background-color:#254a57!important}.bg-emerald-500{background-color:#0e6b7e!important;color:#fff!important}.bg-emerald-500:hover{background-color:#07576a!important}.text-slate-400,.text-slate-500,.text-slate-300{color:#61737b!important}[class~='bg-amber-950/40']{background-color:#fff5dc!important}[class~='border-amber-900/70']{border-color:#dfbc78!important}.text-amber-100{color:#6c4614!important}.border-rose-900{border-color:#bb6d61!important}.text-rose-300{color:#934238!important}[class~='hover:bg-rose-950']:hover{background-color:#fff0ed!important}</style></head>
+<body class='min-h-screen bg-slate-950 text-slate-100'><main class='mx-auto max-w-5xl px-5 py-10'><header class='mb-8 flex items-center justify-between gap-4'><div><h1 class='text-3xl font-bold tracking-tight'>Puente Escáner</h1><p class='mt-1 text-sm text-slate-500'>Versión __APP_VERSION__</p></div><button id='refresh' class='rounded-lg bg-slate-800 px-4 py-2 text-sm font-medium hover:bg-slate-700'>Actualizar</button></header>
+<section class='mb-6 rounded-xl border border-slate-800 bg-slate-900/70 p-6 shadow-2xl'><div class='flex items-center justify-between gap-4'><h2 class='text-lg font-semibold'>Perfiles guardados</h2><button id='new-profile' class='rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400'>Nuevo perfil</button></div><div id='profiles' class='mt-4 space-y-3'></div></section>
+<section class='mb-6 rounded-xl border border-slate-800 bg-slate-900/70 p-6'><h2 class='text-lg font-semibold'>Buscar escáner</h2><div id='detected' class='mt-4 grid gap-3 md:grid-cols-2'></div></section>
+<section id='profile-panel' class='hidden rounded-xl border border-slate-800 bg-slate-900/70 p-6'><h2 class='text-lg font-semibold'>Configuración del perfil</h2><form id='profile' class='mt-5 grid gap-4 sm:grid-cols-2'><label class='text-sm'>ID lógico<input name='id' required class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-emerald-400'></label><label class='text-sm'>Nombre<input name='display_name' required class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-emerald-400'></label><label class='text-sm'>Controlador<select name='driver' class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2'><option value='twain'>TWAIN</option><option value='wia'>WIA</option></select></label><label class='text-sm'>Fuente Windows<input name='windows_device' required class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 outline-none focus:border-emerald-400'></label><label class='text-sm'>Origen<select name='default_source' class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2'><option value='flatbed'>Cristal</option><option value='adf'>Bandeja</option></select></label><label class='text-sm'>Color<select name='default_color_mode' class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2'><option value='color'>Color</option><option value='grayscale'>Grises</option><option value='black_and_white'>Blanco y negro</option></select></label><label class='text-sm'>Resolución<select name='default_resolution' class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2'><option>150</option><option>200</option><option selected>300</option><option>600</option></select></label><label class='text-sm'>Formato<select name='default_output_format' class='mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2'><option>pdf</option><option>png</option><option selected>jpeg</option></select></label><label class='flex items-center gap-2 text-sm text-slate-300 sm:col-span-2'><input type='checkbox' name='default_duplex' class='h-4 w-4 accent-emerald-500'> Dúplex</label><button class='rounded-lg bg-emerald-500 px-4 py-2 font-semibold text-slate-950 hover:bg-emerald-400 sm:col-span-2'>Guardar perfil</button></form></section><pre id='status' class='mt-6 hidden whitespace-pre-wrap rounded-xl border border-amber-900/70 bg-amber-950/40 p-4 text-sm text-amber-100'></pre></main>
 <script>
-const token=new URLSearchParams(location.hash.slice(1)).get('token');const headers={'X-DeviceBridge-Admin':token};
-const status=document.querySelector('#status');const form=document.querySelector('#profile');
+const token=new URLSearchParams(location.hash.slice(1)).get('token'),headers={'X-DeviceBridge-Admin':token},status=document.querySelector('#status'),form=document.querySelector('#profile');
+const profilePanel=document.querySelector('#profile-panel');
 const slug=s=>s.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'').slice(0,64);
-async function load(){const r=await fetch('/admin/api/scanners',{headers});if(!r.ok)throw new Error('Sesión administrativa inválida. Abra esta página desde el icono de DeviceBridge.');const d=await r.json();document.querySelector('#detected').replaceChildren(...d.detected.map(x=>{const b=document.createElement('button');b.textContent='Usar';b.onclick=()=>{form.elements.id.value=slug(x.name);form.elements.display_name.value=x.name;form.elements.driver.value=x.technology.toLowerCase();form.elements.windows_device.value=x.name};const li=document.createElement('li');li.textContent=x.technology+': '+x.name+' ';li.append(b);return li}));document.querySelector('#profiles').replaceChildren(...d.profiles.map(x=>Object.assign(document.createElement('li'),{textContent:x.displayName+' ('+x.driver+')'})));status.textContent=d.diagnostics.join('\\n')}
-form.onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form));d.default_resolution=Number(d.default_resolution);d.default_duplex=form.elements.default_duplex.checked;const r=await fetch('/admin/api/scanners',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(d)});status.textContent=r.ok?'Perfil guardado.':await r.text();if(r.ok)load()};load().catch(e=>status.textContent=e.message);
-</script>"""
+const message=value=>{status.textContent=value||'';status.classList.toggle('hidden',!value)};
+const button=(text,classes)=>Object.assign(document.createElement('button'),{textContent:text,className:classes,type:'button'});
+const showForm=()=>{profilePanel.classList.remove('hidden');profilePanel.scrollIntoView({behavior:'smooth',block:'start'})};
+async function testProfile(id){message('Iniciando prueba…');const response=await fetch('/admin/api/scanners/'+encodeURIComponent(id)+'/test',{method:'POST',headers});if(!response.ok){message(await response.text());return}const job=await response.json();await pollTest(job.id)}
+async function pollTest(jobId){for(;;){const response=await fetch('/admin/api/scans/'+encodeURIComponent(jobId),{headers});if(!response.ok){message(await response.text());return}const job=await response.json();message('Prueba: '+job.state);if(job.state==='COMPLETED'){const file=await fetch('/admin/api/scans/'+encodeURIComponent(job.id)+'/file',{headers});const blob=await file.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='prueba-'+job.id;link.textContent='Descargar resultado de prueba';link.className='mt-3 inline-block font-semibold text-emerald-300 underline';const content=[document.createTextNode('Prueba completada. '),link];if(blob.type.startsWith('image/')){const image=document.createElement('img');image.src=url;image.alt='Vista previa de la prueba';image.className='mt-4 max-h-80 rounded-lg border border-slate-700 bg-white';content.push(image)}status.replaceChildren(...content);status.classList.remove('hidden');return}if(['FAILED','CANCELLED','TIMEOUT','UNCERTAIN'].includes(job.state)){message(job.error?.message||job.state);return}await new Promise(resolve=>setTimeout(resolve,500))}}
+async function load(){const r=await fetch('/admin/api/scanners',{headers});if(!r.ok)throw new Error('Sesión administrativa inválida. Abra esta página desde el icono de Puente Escáner.');const d=await r.json();const detected=document.querySelector('#detected');detected.replaceChildren(...d.detected.map(x=>{const card=document.createElement('article');card.className='flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 p-4';const text=document.createElement('div');text.innerHTML='<p class="font-medium"></p><p class="mt-1 text-xs uppercase tracking-wider text-slate-500"></p>';text.children[0].textContent=x.name;text.children[1].textContent=x.technology;const use=button('Usar','shrink-0 rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400');use.onclick=()=>{form.elements.id.value=slug(x.name);form.elements.display_name.value=x.name;form.elements.driver.value=x.technology.toLowerCase();form.elements.windows_device.value=x.name;showForm()};card.append(text,use);return card}));if(!d.detected.length)detected.textContent='No se detectaron fuentes.';const profiles=document.querySelector('#profiles');profiles.replaceChildren(...d.profiles.map(x=>{const row=document.createElement('article');row.className='flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 p-3';const text=document.createElement('div');text.innerHTML='<p class="font-medium"></p><p class="mt-1 text-xs text-slate-500"></p>';text.children[0].textContent=x.displayName;text.children[1].textContent=x.id+' · '+x.driver.toUpperCase();const actions=document.createElement('div');actions.className='flex gap-2';const test=button('Probar','rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400');test.onclick=()=>testProfile(x.id);const remove=button('Eliminar','rounded-md border border-rose-900 px-3 py-1.5 text-sm text-rose-300 hover:bg-rose-950');remove.onclick=async()=>{if(!confirm('¿Eliminar el perfil '+x.displayName+'?'))return;const response=await fetch('/admin/api/scanners/'+encodeURIComponent(x.id),{method:'DELETE',headers});if(!response.ok)message(await response.text());else{message('Perfil eliminado.');load()}};actions.append(test,remove);row.append(text,actions);return row}));if(!d.profiles.length)profiles.textContent='Aún no hay perfiles guardados.';message(d.diagnostics.join('\\n'))}
+form.onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form));d.default_resolution=Number(d.default_resolution);d.default_duplex=form.elements.default_duplex.checked;const r=await fetch('/admin/api/scanners',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok)message(await r.text());else{message('Perfil guardado.');profilePanel.classList.add('hidden');load()}};document.querySelector('#new-profile').onclick=()=>{form.reset();showForm()};document.querySelector('#refresh').onclick=()=>load().catch(e=>message(e.message));load().catch(e=>message(e.message));
+</script></body></html>"""
+
+
+_SCALAR_PAGE = """<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Puente Escáner · API</title></head><body><div id='app'></div><script src='https://cdn.jsdelivr.net/npm/@scalar/api-reference'></script><script>Scalar.createApiReference('#app',{url:'/openapi.json',pageTitle:'Puente Escáner · API',theme:'purple',layout:'modern',hideClientButton:false})</script></body></html>"""
 
 
 def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver: ScannerDriver, job_id: str,

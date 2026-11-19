@@ -1,6 +1,16 @@
 fastapi<1,>=0.115
 uvicorn[standard]<1,>=0.30
 PyYAML<7,>=6
+ruamel.yaml<1,>=0.18
+Pillow<14,>=12.3
+pystray<1,>=0.19
+
+[:platform_system == "Windows"]
+pywin32>=308
+naps2-scan>=0.1.2
+
+[build]
+pyinstaller<7,>=6.11
 
 [dev]
 pytest<9,>=8

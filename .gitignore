@@ -12,5 +12,11 @@ agent/config.yaml.*.bak
 agent/data/
 *.sqlite3
 
+# Windows packaging artifacts
+agent/build/
+agent/dist/
+agent/*.spec
+agent/installer/prerequisites/
+
 # JavaScript tooling
 node_modules/

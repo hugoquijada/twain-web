@@ -123,7 +123,7 @@ def _load_scanner(raw: object) -> ScannerConfiguration:
     resolution = raw.get("default_resolution", 300)
     if not isinstance(resolution, int) or resolution not in {75, 100, 150, 200, 300, 600, 1200}:
         raise ConfigurationError("scanner.default_resolution no es válido.")
-    output_format = raw.get("default_output_format", "pdf")
+    output_format = raw.get("default_output_format", "jpeg")
     if output_format not in {"png", "jpeg", "pdf"}:
         raise ConfigurationError("scanner.default_output_format no es válido.")
     duplex = raw.get("default_duplex", False)

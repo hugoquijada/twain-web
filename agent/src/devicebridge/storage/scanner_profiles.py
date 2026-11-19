@@ -29,11 +29,17 @@ class ScannerProfileRepository:
 
     def seed_if_empty(self, profiles: tuple[ScannerConfiguration, ...]) -> None:
         with self._lock:
+            migrated = self._connection.execute(
+                "SELECT 1 FROM local_settings WHERE key='scanner_profiles_seeded'"
+            ).fetchone()
+            if migrated:
+                return
             count = self._connection.execute("SELECT COUNT(*) FROM scanner_profiles").fetchone()[0]
             if count == 0:
                 for profile in profiles:
                     self._upsert(profile)
-                self._connection.commit()
+            self._connection.execute("INSERT INTO local_settings VALUES ('scanner_profiles_seeded', '1')")
+            self._connection.commit()
 
     def list(self) -> tuple[ScannerConfiguration, ...]:
         with self._lock:
@@ -44,6 +50,12 @@ class ScannerProfileRepository:
         with self._lock:
             self._upsert(profile)
             self._connection.commit()
+
+    def delete(self, identifier: str) -> bool:
+        with self._lock:
+            cursor = self._connection.execute("DELETE FROM scanner_profiles WHERE id=?", (identifier,))
+            self._connection.commit()
+        return cursor.rowcount == 1
 
     def admin_token(self) -> str:
         with self._lock:

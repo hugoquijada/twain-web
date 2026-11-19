@@ -6,7 +6,7 @@ import webbrowser
 from pathlib import Path
 
 
-def run_tray(server, admin_url: str) -> None:
+def run_tray(server, admin_url: str, version: str) -> None:
     """Show runtime state and open the local configuration window on Windows."""
     try:
         import pystray
@@ -16,29 +16,48 @@ def run_tray(server, admin_url: str) -> None:
 
     image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.ellipse((8, 8, 56, 56), fill=(29, 142, 75, 255))
-    draw.rectangle((28, 18, 36, 46), fill=(255, 255, 255, 255))
-    draw.rectangle((18, 28, 46, 36), fill=(255, 255, 255, 255))
+    # Scanner silhouette: sheet, dark body, control light and output tray.
+    draw.rounded_rectangle((7, 18, 57, 51), radius=7, fill=(15, 47, 64, 255))
+    draw.rounded_rectangle((15, 8, 49, 31), radius=3, fill=(241, 245, 249, 255))
+    draw.line((20, 15, 44, 15), fill=(148, 163, 184, 255), width=2)
+    draw.line((20, 20, 39, 20), fill=(148, 163, 184, 255), width=2)
+    draw.ellipse((47, 25, 51, 29), fill=(52, 211, 153, 255))
+    draw.rounded_rectangle((16, 38, 48, 56), radius=3, fill=(255, 255, 255, 255))
+    draw.line((22, 45, 42, 45), fill=(148, 163, 184, 255), width=2)
 
     def configure(icon, item) -> None:
         webbrowser.open(admin_url)
+
+    def view_api(icon, item) -> None:
+        base_url = admin_url.split("/admin", 1)[0]
+        webbrowser.open(f"{base_url}/docs")
 
     def exit_agent(icon, item) -> None:
         server.should_exit = True
         icon.stop()
 
     menu = pystray.Menu(
-        pystray.MenuItem("DeviceBridge activo", None, enabled=False),
+        pystray.MenuItem(f"Puente Escáner · versión {version}", None, enabled=False),
         pystray.MenuItem("Configurar escáner…", configure, default=True),
+        pystray.MenuItem("Ver API", view_api),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Salir", exit_agent),
     )
-    icon = pystray.Icon("devicebridge", image, "DeviceBridge activo", menu)
+    icon = pystray.Icon("puente-escaner", image, f"Puente Escáner {version}", menu)
     icon.run()
 
 
-def start_server_with_tray(uvicorn, application, host: str, port: int, admin_url: str) -> None:
-    config = uvicorn.Config(application, host=host, port=port, log_level="info")
+def start_server_with_tray(uvicorn, application, host: str, port: int, admin_url: str, version: str) -> None:
+    # The packaged application is built with --noconsole, where sys.stderr is
+    # None. Uvicorn's default logging formatter calls stderr.isatty(), causing
+    # startup to fail before the tray icon can be shown.
+    config = uvicorn.Config(
+        application,
+        host=host,
+        port=port,
+        log_config=None,
+        access_log=False,
+    )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="devicebridge-http", daemon=True)
     thread.start()
@@ -51,4 +70,4 @@ def start_server_with_tray(uvicorn, application, host: str, port: int, admin_url
     if not server.started:
         server.should_exit = True
         raise RuntimeError("El agente HTTP no inició dentro del tiempo esperado.")
-    run_tray(server, admin_url)
+    run_tray(server, admin_url, version)

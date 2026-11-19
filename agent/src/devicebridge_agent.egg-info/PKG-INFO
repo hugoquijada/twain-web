@@ -2,10 +2,17 @@ Metadata-Version: 2.4
 Name: devicebridge-agent
 Version: 0.1.0
 Summary: Local Windows scanner bridge for authorized web applications
-Requires-Python: >=3.11
+Requires-Python: <3.15,>=3.11
 Requires-Dist: fastapi<1,>=0.115
 Requires-Dist: uvicorn[standard]<1,>=0.30
 Requires-Dist: PyYAML<7,>=6
+Requires-Dist: ruamel.yaml<1,>=0.18
+Requires-Dist: pywin32>=308; platform_system == "Windows"
+Requires-Dist: naps2-scan>=0.1.2; platform_system == "Windows"
+Requires-Dist: Pillow<14,>=12.3
+Requires-Dist: pystray<1,>=0.19
 Provides-Extra: dev
 Requires-Dist: pytest<9,>=8; extra == "dev"
 Requires-Dist: httpx<1,>=0.27; extra == "dev"
+Provides-Extra: build
+Requires-Dist: pyinstaller<7,>=6.11; extra == "build"
