@@ -1,0 +1,15 @@
+agent:
+  installation_id: "replace-on-install"
+  host: "127.0.0.1"
+  port: 8765
+  data_directory: "C:\\ProgramData\\PuenteEscaner\\Data"
+  temporary_directory: "C:\\ProgramData\\PuenteEscaner\\Data\\tmp"
+  retention_hours: 24
+  allowed_origins:
+    - "http://localhost:8000"
+  api_token_environment: "DEVICEBRIDGE_API_TOKEN"
+  authentication_required: false
+  debug_errors: false
+
+# Los perfiles se crean desde Puente Escáner > Configurar escáner.
+scanners: []
