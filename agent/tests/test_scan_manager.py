@@ -77,6 +77,21 @@ class ScanJobManagerTest(unittest.TestCase):
             self._wait_for_state(repository, job.identifier, JobState.CANCELLED)
             self.assertFalse(repository.get(job.identifier).file_path)
 
+    def test_cancel_all_cancels_pending_and_requests_active_capture_stop(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repository = SQLiteJobRepository(root / "jobs.sqlite3")
+            manager = ScanJobManager(repository, TemporaryFileStore(root / "files"), False)
+            active = repository.create_or_get("scan", "scanner-a", "active")
+            queued = repository.create_or_get("scan", "scanner-b", "queued")
+            repository.update(active.identifier, JobState.PROCESSING)
+
+            result = manager.cancel_all()
+
+            self.assertEqual({"cancelled": 1, "cancellationRequested": 1}, result)
+            self.assertEqual(JobState.CANCEL_REQUESTED, repository.get(active.identifier).state)
+            self.assertEqual(JobState.CANCELLED, repository.get(queued.identifier).state)
+
     def _wait_for_state(self, repository, job_id, expected):
         for _ in range(40):
             if repository.get(job_id).state == expected:

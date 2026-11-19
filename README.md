@@ -43,6 +43,8 @@ Los scripts de desarrollo establecen `PYTHONPYCACHEPREFIX` para que el bytecode 
 
 En Windows, el arranque normal muestra el icono verde de DeviceBridge en la bandeja del sistema. Desde **Configurar escáner…** se detectan fuentes WIA/TWAIN y se pueden establecer los valores predeterminados de fuente, color, resolución, formato y dúplex.
 
+El menú del icono también permite **Cancelar todos los escaneos** y **Reiniciar agente**. Reiniciar detiene el servidor y lo inicia con el mismo `config.yaml`, por lo que sirve para aplicar cambios de configuración sin cerrar sesión.
+
 Los perfiles de escáner ya no se administran en `config.yaml`: se guardan en `devicebridge.sqlite3` dentro del directorio de datos del agente. El icono de la bandeja abre el portal local, donde se detecta una fuente TWAIN/WIA y se crea el perfil. El enlace incluye una sesión administrativa temporal y solo funciona en `127.0.0.1`.
 
 ## Preparar y empaquetar el instalador

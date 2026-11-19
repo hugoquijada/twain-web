@@ -88,6 +88,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
     )
     app.state.admin_token = scanner_profiles.admin_token()
     app.state.admin_url = f"http://127.0.0.1:{configuration.port}/admin#token={app.state.admin_token}"
+    app.state.scan_jobs = scan_jobs
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(configuration.allowed_origins),

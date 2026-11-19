@@ -3,10 +3,12 @@ from __future__ import annotations
 import threading
 import time
 import webbrowser
+import os
+import sys
 from pathlib import Path
 
 
-def run_tray(server, admin_url: str, version: str) -> None:
+def run_tray(server, admin_url: str, version: str, cancel_all, restart) -> None:
     """Show runtime state and open the local configuration window on Windows."""
     try:
         import pystray
@@ -36,10 +38,27 @@ def run_tray(server, admin_url: str, version: str) -> None:
         server.should_exit = True
         icon.stop()
 
+    def cancel_scans(icon, item) -> None:
+        result = cancel_all()
+        message = f"Se cancelaron {result['cancelled']} pendientes."
+        if result["cancellationRequested"]:
+            message += f" Se solicitó detener {result['cancellationRequested']} captura(s) activa(s)."
+        try:
+            icon.notify(message, "Puente Escáner")
+        except Exception:
+            pass
+
+    def restart_agent(icon, item) -> None:
+        server.should_exit = True
+        icon.stop()
+        restart()
+
     menu = pystray.Menu(
         pystray.MenuItem(f"Puente Escáner · versión {version}", None, enabled=False),
         pystray.MenuItem("Configurar escáner…", configure, default=True),
         pystray.MenuItem("Ver API", view_api),
+        pystray.MenuItem("Cancelar todos los escaneos", cancel_scans),
+        pystray.MenuItem("Reiniciar agente", restart_agent),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Salir", exit_agent),
     )
@@ -70,4 +89,8 @@ def start_server_with_tray(uvicorn, application, host: str, port: int, admin_url
     if not server.started:
         server.should_exit = True
         raise RuntimeError("El agente HTTP no inició dentro del tiempo esperado.")
-    run_tray(server, admin_url, version)
+    def restart() -> None:
+        thread.join(timeout=10)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    run_tray(server, admin_url, version, application.state.scan_jobs.cancel_all, restart)

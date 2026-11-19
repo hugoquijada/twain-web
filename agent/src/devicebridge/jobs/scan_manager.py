@@ -54,6 +54,19 @@ class ScanJobManager:
                                            error_message="Cancelación solicitada; el controlador terminará la captura actual.")
         return job
 
+    def cancel_all(self) -> dict[str, int]:
+        """Cancels every pending or active scan managed by this agent."""
+        cancelled = 0
+        requested = 0
+        for job in self._repository.list(job_type="scan"):
+            if job.state == JobState.QUEUED:
+                self.cancel(job.identifier)
+                cancelled += 1
+            elif job.state == JobState.PROCESSING:
+                self.cancel(job.identifier)
+                requested += 1
+        return {"cancelled": cancelled, "cancellationRequested": requested}
+
     def _run(self, job_id: str, driver: ScannerDriver, request: ScanRequest) -> None:
         try:
             lock = self._device_lock(self._required_scan(job_id).device_id)
