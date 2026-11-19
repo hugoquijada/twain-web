@@ -7,6 +7,9 @@ agent:
   retention_hours: 24
   allowed_origins:
     - "http://localhost:8000"
+    - "http://localhost:3000"
+    - "https://cs-oficialia.web.app"
+    - "http://127.0.0.1:8765"
   api_token_environment: "DEVICEBRIDGE_API_TOKEN"
   authentication_required: false
   debug_errors: false

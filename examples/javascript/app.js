@@ -5,9 +5,12 @@ const controls = {
   load: document.querySelector('#load'),
   scanner: document.querySelector('#scanner'),
   scan: document.querySelector('#scan'),
+  cancel: document.querySelector('#cancel'),
   status: document.querySelector('#status'),
   preview: document.querySelector('#preview')
 };
+
+let activeJobId = null;
 
 function setStatus(value) {
   controls.status.textContent = value;
@@ -53,11 +56,29 @@ controls.scan.addEventListener('click', async () => {
       output_format: 'png',
       duplex: false
     });
+    activeJobId = job.id;
+    controls.cancel.disabled = false;
     await waitForCompletion(job.id);
   } catch (error) {
     setStatus(`No fue posible iniciar el escaneo: ${error.message}`);
   } finally {
+    activeJobId = null;
+    controls.cancel.disabled = true;
     controls.scan.disabled = false;
+  }
+});
+
+controls.cancel.addEventListener('click', async () => {
+  if (!activeJobId) {
+    return;
+  }
+  controls.cancel.disabled = true;
+  try {
+    const job = await bridge().cancelScan(activeJobId);
+    setStatus(`Trabajo ${job.id}: ${job.state}.`);
+  } catch (error) {
+    setStatus(`No fue posible cancelar el trabajo: ${error.message}`);
+    controls.cancel.disabled = false;
   }
 });
 

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-
 import { DeviceBridgeClient, DeviceBridgeError } from '../src/index.js';
 
 test('sends the token and creates an idempotent scan request', async () => {
@@ -19,7 +18,6 @@ test('sends the token and creates an idempotent scan request', async () => {
   assert.equal(captured.options.headers.get('Authorization'), 'Bearer local-secret');
   assert.equal(captured.options.headers.get('Idempotency-Key'), 'request-1');
 });
-
 test('converts the agent error contract into DeviceBridgeError', async () => {
   const client = new DeviceBridgeClient({
     fetchImplementation: async () => Response.json({ detail: { code: 'SCANNER_NOT_FOUND', message: 'No encontrado.' } }, { status: 404 })
@@ -32,7 +30,6 @@ test('converts the agent error contract into DeviceBridgeError', async () => {
     return true;
   });
 });
-
 test('requests actual scanner detection separately from configured scanners', async () => {
   let requestedUrl;
   const client = new DeviceBridgeClient({
@@ -44,4 +41,36 @@ test('requests actual scanner detection separately from configured scanners', as
 
   await client.detectScanners();
   assert.match(requestedUrl, /\/scanners\/detected$/);
+});
+
+test('lists jobs', async () => {
+  const client = new DeviceBridgeClient({
+    fetchImplementation: async () => Response.json({ items: [] })
+  });
+
+  assert.deepEqual(await client.listJobs(), { items: [] });
+});
+test('can cancel and remove jobs', async () => {
+  const requests = [];
+  const client = new DeviceBridgeClient({
+    fetchImplementation: async (url, options) => {
+      requests.push({ url, options });
+      return options.method === 'DELETE'
+        ? new Response(null, { status: 204 })
+        : Response.json({ id: 'job-1', state: 'CANCELLED' });
+    }
+  });
+
+  const job = await client.cancelScan('job-1');
+  await client.deleteJob('job-1');
+
+  assert.equal(job.state, 'CANCELLED');
+  assert.match(requests[0].url, /\/scans\/job-1\/cancel$/);
+  assert.equal(requests[0].options.method, 'POST');
+  assert.match(requests[1].url, /\/jobs\/job-1$/);
+  assert.equal(requests[1].options.method, 'DELETE');
+});
+
+test('requires a fetch implementation', () => {
+  assert.throws(() => new DeviceBridgeClient({ fetchImplementation: null }), TypeError);
 });

@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, HTMLResponse
@@ -19,14 +19,13 @@ from devicebridge.devices.connections.virtualhere import AgentConnectionRegistry
 from devicebridge.devices.scanners.base import ScanRequest, ScannerDriver
 from devicebridge.devices.scanners.discovery import discover_scanners
 from devicebridge.devices.scanners.registry import ScannerRegistry
-from devicebridge.devices.scanners.simulated import SimulatedScannerDriver, UnsupportedScanOption
+from devicebridge.devices.scanners.simulated import SimulatedScannerDriver
 from devicebridge.devices.scanners.twain import TwainScannerDriver
-from devicebridge.devices.scanners.twain import TwainScanError
 from devicebridge.devices.scanners.unavailable import ScannerDriverUnavailable, UnavailableScannerDriver
 from devicebridge.devices.scanners.wia import WiaScannerDriver
-from devicebridge.devices.scanners.wia import WiaScanError
 from devicebridge.jobs.models import JobState
-from devicebridge.jobs.repository import SQLiteJobRepository
+from devicebridge.jobs.repository import JobInProgressError, SQLiteJobRepository
+from devicebridge.jobs.scan_manager import ScanJobManager
 from devicebridge.storage.files import TemporaryFileStore
 from devicebridge.storage.scanner_profiles import ScannerProfileRepository
 
@@ -62,6 +61,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
 
     repository = SQLiteJobRepository(configuration.data_directory / "jobs.sqlite3")
     file_store = TemporaryFileStore(configuration.temporary_directory)
+    scan_jobs = ScanJobManager(repository, file_store, configuration.debug_errors)
     scanner_profiles = ScannerProfileRepository(configuration.data_directory / "devicebridge.sqlite3")
     scanner_profiles.seed_if_empty(configuration.scanners)
     scanner_registry = ScannerRegistry(scanner_profiles)
@@ -107,7 +107,9 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         local_admin_origin = f"http://127.0.0.1:{configuration.port}"
         if (admin_request or documentation_request) and origin and origin != local_admin_origin:
             return _error(403, "ORIGIN_NOT_ALLOWED", "Origen administrativo no autorizado.")
-        if not admin_request and not documentation_request and request.method != "OPTIONS" and origin not in configuration.allowed_origins:
+        public_local_request = origin == local_admin_origin
+        if (not admin_request and not documentation_request and request.method != "OPTIONS"
+                and not public_local_request and origin not in configuration.allowed_origins):
             return _error(403, "ORIGIN_NOT_ALLOWED", "Origen no autorizado.")
         return await call_next(request)
 
@@ -161,16 +163,17 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         scanner_registry.refresh()
 
     @app.post("/admin/api/scanners/{scanner_id}/test", status_code=202, dependencies=[Depends(authorize_admin)])
-    def test_admin_scanner(scanner_id: str, background_tasks: BackgroundTasks) -> dict[str, object]:
+    def test_admin_scanner(scanner_id: str) -> dict[str, object]:
         scanner_configuration, drivers = scanner_registry.snapshot()
         driver = _driver_or_404(drivers, scanner_id)
         profile = scanner_configuration[scanner_id]
-        job = repository.create_or_get("scan", scanner_id, f"admin-test-{uuid.uuid4()}")
+        try:
+            job = repository.create_or_get_exclusive("scan", scanner_id, f"admin-test-{uuid.uuid4()}")
+        except JobInProgressError as error:
+            raise _http_error(409, "SCAN_IN_PROGRESS", "Ya hay una captura activa para este escáner.") from error
         request = ScanRequest(profile.default_source, profile.default_color_mode, profile.default_resolution,
                               profile.default_output_format, profile.default_duplex)
-        background_tasks.add_task(
-            _run_scan, repository, file_store, driver, job.identifier, request, configuration.debug_errors
-        )
+        scan_jobs.enqueue(job, driver, request)
         return job.to_api()
 
     @app.get("/admin/api/scans/{job_id}", dependencies=[Depends(authorize_admin)])
@@ -292,16 +295,19 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         return {"id": device.identifier, "name": device.display_name, "status": after.to_api()}
 
     @app.post("/api/v1/scans", status_code=202, dependencies=[Depends(authorize)], tags=["Escáner · 3. Iniciar"])
-    def create_scan(body: ScanBody, background_tasks: BackgroundTasks,
+    def create_scan(body: ScanBody,
                     idempotency_key: Annotated[str | None, Header()] = None) -> dict[str, object]:
         if not idempotency_key or len(idempotency_key) > 128:
             raise _http_error(400, "IDEMPOTENCY_KEY_REQUIRED", "Se requiere Idempotency-Key de hasta 128 caracteres.")
         scanner_configuration, drivers = scanner_registry.snapshot()
         driver = _driver_or_404(drivers, body.scanner_id)
         try:
-            job = repository.create_or_get("scan", body.scanner_id, idempotency_key)
+            job = repository.create_or_get_exclusive("scan", body.scanner_id, idempotency_key)
         except ValueError as error:
             raise _http_error(409, "IDEMPOTENCY_KEY_CONFLICT", str(error)) from error
+        except JobInProgressError as error:
+            raise _http_error(409, "SCAN_IN_PROGRESS",
+                              f"El escáner ya está ocupado por el trabajo {error.job.identifier}.") from error
         if job.state == JobState.QUEUED:
             defaults = scanner_configuration[body.scanner_id]
             request = ScanRequest(
@@ -311,9 +317,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
                 body.output_format or defaults.default_output_format,
                 defaults.default_duplex if body.duplex is None else body.duplex,
             )
-            background_tasks.add_task(
-                _run_scan, repository, file_store, driver, job.identifier, request, configuration.debug_errors
-            )
+            scan_jobs.enqueue(job, driver, request)
         return job.to_api()
 
     @app.get("/api/v1/scans/{job_id}", dependencies=[Depends(authorize)], tags=["Escáner · 4. Seguimiento"])
@@ -322,6 +326,28 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
         if not job or job.job_type != "scan":
             raise _http_error(404, "JOB_NOT_FOUND", "Trabajo no encontrado.")
         return job.to_api()
+
+    @app.post("/api/v1/scans/{job_id}/cancel", dependencies=[Depends(authorize)], tags=["Escáner · 4. Seguimiento"])
+    def cancel_scan(job_id: str) -> dict[str, object]:
+        try:
+            return scan_jobs.cancel(job_id).to_api()
+        except KeyError as error:
+            raise _http_error(404, "JOB_NOT_FOUND", "Trabajo no encontrado.") from error
+
+    @app.get("/api/v1/jobs", dependencies=[Depends(authorize)], tags=["Escáner · 4. Seguimiento"])
+    def list_jobs() -> dict[str, list[dict[str, object]]]:
+        return {"items": [job.to_api() for job in repository.list(job_type="scan")]}
+
+    @app.delete("/api/v1/jobs/{job_id}", status_code=204, dependencies=[Depends(authorize)], tags=["Escáner · 4. Seguimiento"])
+    def delete_job(job_id: str) -> None:
+        job = repository.get(job_id)
+        if not job or job.job_type != "scan":
+            raise _http_error(404, "JOB_NOT_FOUND", "Trabajo no encontrado.")
+        if job.state in {JobState.QUEUED, JobState.PROCESSING, JobState.CANCEL_REQUESTED}:
+            raise _http_error(409, "JOB_NOT_TERMINAL", "Cancele el trabajo y espere a que termine antes de eliminarlo.")
+        if job.file_path:
+            Path(job.file_path).unlink(missing_ok=True)
+        repository.delete(job_id)
 
     @app.get("/api/v1/scans/{job_id}/file", dependencies=[Depends(authorize)], tags=["Escáner · 5. Archivo"])
     def scan_file(job_id: str) -> FileResponse:
@@ -341,6 +367,7 @@ def create_app(configuration: AgentConfiguration) -> FastAPI:
             path: methods for path, methods in schema.get("paths", {}).items()
             if path.startswith("/api/v1/scanners")
             or path.startswith("/api/v1/scans")
+            or path.startswith("/api/v1/jobs")
             or path.startswith("/api/v1/virtualhere")
         }
         components = schema.setdefault("components", {})
@@ -452,30 +479,6 @@ form.onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormDa
 
 
 _SCALAR_PAGE = """<!doctype html><html lang='es'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Puente Escáner · API</title></head><body><div id='app'></div><script src='https://cdn.jsdelivr.net/npm/@scalar/api-reference'></script><script>Scalar.createApiReference('#app',{url:'/openapi.json',pageTitle:'Puente Escáner · API',theme:'purple',layout:'modern',hideClientButton:false})</script></body></html>"""
-
-
-def _run_scan(repository: SQLiteJobRepository, store: TemporaryFileStore, driver: ScannerDriver, job_id: str,
-              request: ScanRequest, debug_errors: bool = False) -> None:
-    repository.update(job_id, JobState.PROCESSING)
-    try:
-        result = driver.scan(request)
-        path = store.write(job_id, result.filename_extension, result.content)
-        repository.update(job_id, JobState.COMPLETED, file_path=str(path), file_media_type=result.media_type)
-    except UnsupportedScanOption as error:
-        repository.update(job_id, JobState.FAILED, error_code=str(error), error_message="Opción no compatible.")
-    except ScannerDriverUnavailable as error:
-        repository.update(job_id, JobState.FAILED, error_code="SCANNER_DRIVER_UNAVAILABLE",
-                          error_message=f"No se pudo usar el escáner: {error}.")
-    except (TwainScanError, WiaScanError) as error:
-        repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message=str(error))
-    except Exception:
-        logger.exception("Error inesperado al procesar el escaneo %s.", job_id)
-        message = "Error interno de escaneo."
-        if debug_errors:
-            import sys
-            error = sys.exception()
-            message = f"{type(error).__name__}: {error}"
-        repository.update(job_id, JobState.FAILED, error_code="SCAN_FAILED", error_message=message)
 
 
 def _http_error(status: int, code: str, message: str) -> HTTPException:

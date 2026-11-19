@@ -74,3 +74,15 @@ python -m http.server 8080 --bind 127.0.0.1
 ```
 
 Abra `http://127.0.0.1:8080/examples/javascript/`.
+
+## Trabajos de escaneo
+
+El agente no mantiene una cola de documentos: sólo permite un trabajo no terminal por escáner. Si existe uno en `QUEUED`, `PROCESSING` o `CANCEL_REQUESTED`, una nueva solicitud responde `409 SCAN_IN_PROGRESS`.
+
+```javascript
+const job = await bridge.createScan({ scanner_id: 'mi-escaner' });
+await bridge.cancelScan(job.id);
+await bridge.deleteJob(job.id); // sólo después de CANCELLED, COMPLETED, FAILED o UNCERTAIN
+```
+
+También están disponibles `bridge.listJobs()` y `GET /api/v1/jobs`. Si una captura tarda demasiado, el usuario puede ejecutar `bridge.cancelScan(job.id)`. Un controlador TWAIN/WIA no siempre permite interrumpir una captura ya iniciada: en ese caso el trabajo pasa a `CANCEL_REQUESTED`, se descarta su resultado cuando el controlador regrese y entonces queda `CANCELLED`. Si se reinicia el agente durante una captura, el trabajo se conserva como `UNCERTAIN` para evitar reportarlo falsamente como terminado.

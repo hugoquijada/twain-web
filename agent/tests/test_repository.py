@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from devicebridge.jobs.models import JobState
-from devicebridge.jobs.repository import SQLiteJobRepository
+from devicebridge.jobs.repository import JobInProgressError, SQLiteJobRepository
 
 
 class SQLiteJobRepositoryTest(unittest.TestCase):
@@ -36,3 +36,13 @@ class SQLiteJobRepositoryTest(unittest.TestCase):
             self.assertIsNotNone(recovered)
             self.assertEqual(JobState.COMPLETED, recovered.state)
             self.assertEqual("C:/tmp/file.png", recovered.file_path)
+
+    def test_exclusive_job_rejects_second_request_for_same_scanner(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository = SQLiteJobRepository(Path(temporary_directory) / "jobs.sqlite3")
+            first = repository.create_or_get_exclusive("scan", "scanner-a", "first")
+
+            with self.assertRaises(JobInProgressError) as context:
+                repository.create_or_get_exclusive("scan", "scanner-a", "second")
+
+            self.assertEqual(first.identifier, context.exception.job.identifier)

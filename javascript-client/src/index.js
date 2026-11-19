@@ -53,6 +53,18 @@ export class DeviceBridgeClient {
     return this.#json(`/scans/${encodeURIComponent(jobId)}`);
   }
 
+  cancelScan(jobId) {
+    return this.#json(`/scans/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+  }
+
+  listJobs() {
+    return this.#json('/jobs');
+  }
+
+  async deleteJob(jobId) {
+    await this.#request(`/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+  }
+
   async waitForScan(jobId, { intervalMs = 500, signal } = {}) {
     for (;;) {
       if (signal?.aborted) {

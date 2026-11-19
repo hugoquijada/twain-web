@@ -6,6 +6,7 @@
 - Validación de `config.yaml`: enlace exclusivo a `127.0.0.1`, lista explícita de orígenes y secreto tomado de una variable de entorno.
 - Validación de `Host`, `Origin` y encabezado `Authorization: Bearer`; CORS sin comodín.
 - Trabajos con UUID, clave de idempotencia y estado persistido en SQLite.
+- Un único trabajo no terminal por escáner: nuevas solicitudes reciben conflicto mientras haya una captura activa; la cancelación es manual y un reinicio se recupera como `UNCERTAIN`.
 - Archivos temporales aleatorizados por UUID de trabajo.
 - Adaptador simulado, útil para probar la API y el ejemplo JavaScript sin hardware.
 - Valores predeterminados por escáner: fuente, color, resolución, formato y dúplex.
@@ -20,7 +21,7 @@
 - Validación de `WiaScannerDriver` para HP LaserJet Pro MFP 4103fdw.
 - Validación del adaptador TWAIN en HP Color LaserJet Pro MFP 3303fdw y HP LaserJet Pro MFP 4103fdw. El flujo TWAIN ya fue probado con Brother DSmobile DS-740D.
 - Enumeración real de dispositivos, capacidades, ADF, dúplex, multipágina, JPEG/PDF y errores del controlador.
-- Rotación/expiración de archivos, cancelación, impresión, empaquetado e instalador Windows.
+- Rotación/expiración de archivos, interrupción física garantizada de controladores, impresión y certificación final del instalador Windows.
 - Confirmación física del formato de respuesta `DEVICE INFO` de VirtualHere antes de habilitar desconexión automática en un flujo de impresión.
 
 Los adaptadores reales se implementarán solamente contra una computadora Windows de prueba con el controlador HP correspondiente instalado. No se debe cambiar un escáner a `wia` o `twain` en producción esperando que el marcador actual capture documentos: devuelve `SCANNER_DRIVER_UNAVAILABLE` de forma explícita.
