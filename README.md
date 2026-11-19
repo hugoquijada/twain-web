@@ -45,9 +45,18 @@ En Windows, el arranque normal muestra el icono verde de DeviceBridge en la band
 
 Los perfiles de escáner ya no se administran en `config.yaml`: se guardan en `devicebridge.sqlite3` dentro del directorio de datos del agente. El icono de la bandeja abre el portal local, donde se detecta una fuente TWAIN/WIA y se crea el perfil. El enlace incluye una sesión administrativa temporal y solo funciona en `127.0.0.1`.
 
-## Empaquetado para instalación
+## Preparar y empaquetar el instalador
 
-En Windows x64, con el entorno de desarrollo instalado, ejecute desde `agent/`:
+En una computadora de compilación nueva, desde `agent/`, ejecute una vez:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\setup-build-tools.ps1
+```
+
+El script instala mediante `winget` Python 3.13, Inno Setup 6 y las dependencias de compilación en `.venv`. Requiere conexión a Internet; puede solicitar permisos de administrador según la configuración de Windows.
+
+Después genere el instalador:
 
 ```powershell
 .\scripts\build-installer.ps1
